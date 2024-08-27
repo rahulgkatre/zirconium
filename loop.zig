@@ -46,7 +46,7 @@ pub fn Logic(comptime In: type, comptime Out: type) type {
         .type = []const usize,
     };
     return @Type(.{ .Fn = .{
-        .calling_convention = .kernel,
+        .calling_convention = std.builtin.CallingConvention.Inline,
         .is_generic = false,
         .is_var_args = false,
         .params = &params,
@@ -69,7 +69,7 @@ pub const Loop = struct {
         in: anytype,
         out: anytype,
         base_idx: []usize,
-        comptime logic: *const Logic(In, Out),
+        comptime logic: Logic(In, Out),
     ) void {
         if (comptime depth < ndims) {
             var idx = base_idx;
@@ -95,7 +95,7 @@ pub const Loop = struct {
         comptime ndims: u8,
         in: anytype,
         out: anytype,
-        logic: *const Logic(In, Out),
+        comptime logic: Logic(In, Out),
     ) void {
         var idx: [ndims]usize = .{0} ** ndims;
         nestEval(loop, In, Out, ndims, 0, in, out, @constCast(&idx), logic);
