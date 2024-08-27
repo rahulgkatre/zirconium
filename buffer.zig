@@ -11,29 +11,26 @@ fn ShapeToArray(comptime dtype: type, comptime ndims: u8, comptime shape: [ndims
 }
 
 pub const Layout = struct {
-    original_ndims: *const u8,
-    original_shape: []const usize,
     ndims: u8,
     shape: []const usize,
     strides: []const usize,
     offest: usize = 0,
-    skew: []const usize,
-    vectorized: bool = false,
-    unrolled: []const bool,
-    parallelized: []const bool,
 };
 
 pub fn Tensor(comptime Array: type) type {
     return struct {
         const Self = @This();
-        const alignment = @alignOf(Base);
+        const CACHE_LINE = std.atomic.cache_line;
+        const SIMD_ALIGN = @alignOf(Vec);
+
+        const alignment = @max(SIMD_ALIGN, CACHE_LINE);
 
         pub const Buffer = struct {
             layout: Layout,
-            multi: *align(alignment) Array,
-            raw: [*]align(alignment) dtype,
+            multi: *Array align(alignment),
+            raw: [*]dtype align(alignment),
 
-            pub fn constant(_: *const Buffer, val: dtype) Base {
+            pub fn constant(_: Buffer, val: dtype) Base {
                 if (Base == dtype) {
                     return val;
                 } else {
@@ -41,8 +38,7 @@ pub fn Tensor(comptime Array: type) type {
                 }
             }
 
-            pub inline fn unravel(b: *const Buffer, idx: []const usize) usize {
-                std.debug.assert(idx.len == b.layout.original_ndims.*);
+            pub inline fn unravel(b: Buffer, idx: []const usize) usize {
                 var i: usize = 0;
                 inline for (0..t_ndims) |d| {
                     comptime if (Base != dtype and d == t_ndims - 1) break;
@@ -51,17 +47,19 @@ pub fn Tensor(comptime Array: type) type {
                 return i;
             }
 
-            pub inline fn load(b: *const Buffer, idx: []const usize) Base {
+            pub inline fn load(b: Buffer, idx: []const usize) Base {
                 if (comptime Base != dtype) {
-                    return @as(Base, b.raw[b.unravel(idx)..][0..t_shape[t_ndims - 1]].*);
+                    const val: *const Base align(alignment) = @alignCast(b.raw[b.unravel(idx)..][0..t_shape[t_ndims - 1]]);
+                    return @as(Base, val.*);
                 } else {
                     return b.raw[b.unravel(idx)];
                 }
             }
 
-            pub inline fn store(b: *const Buffer, val: Base, idx: []const usize) void {
+            pub inline fn store(b: Buffer, val: Base, idx: []const usize) void {
                 if (comptime Base != dtype) {
-                    b.raw[b.unravel(idx)..][0..t_shape[t_ndims - 1]].* = val;
+                    const dst: *Base align(alignment) = @alignCast(b.raw[b.unravel(idx)..][0..t_shape[t_ndims - 1]]);
+                    dst.* = val;
                 } else {
                     b.raw[b.unravel(idx)] = val;
                 }
@@ -72,20 +70,18 @@ pub fn Tensor(comptime Array: type) type {
         pub fn init() Self {
             return comptime .{
                 .layout = .{
-                    .original_ndims = &@intCast(t_ndims),
-                    .original_shape = &t_shape,
                     .ndims = t_ndims,
                     .shape = &t_shape,
                     .strides = &t_contiguous_strides,
-                    .skew = &(.{0} ** t_ndims),
-                    .unrolled = &(.{false} ** t_ndims),
-                    .parallelized = &(.{false} ** t_ndims),
+                    // .skew = &(.{0} ** t_ndims),
+                    // .unrolled = &(.{false} ** t_ndims),
+                    // .parallelized = &(.{false} ** t_ndims),
                 },
             };
         }
 
         pub fn alloc(self: *const Self, allocator: std.mem.Allocator) !Buffer {
-            const slice = try allocator.alignedAlloc(dtype, alignment, t_numel.?);
+            const slice: []align(alignment) dtype = try allocator.alignedAlloc(dtype, alignment, t_numel.?);
             if (dtype == bool) {
                 @memset(slice, false);
             } else {
@@ -94,8 +90,8 @@ pub fn Tensor(comptime Array: type) type {
 
             return Buffer{
                 .layout = self.layout,
-                .multi = @ptrCast(slice.ptr),
-                .raw = @ptrCast(slice.ptr),
+                .multi = @alignCast(@ptrCast(slice)),
+                .raw = @alignCast(@ptrCast(slice)),
             };
         }
 
@@ -177,18 +173,27 @@ pub fn Tensor(comptime Array: type) type {
         };
 
         fn Split(comptime dim: u8, comptime count: u8) type {
-            std.debug.assert(0 >= dim and dim < t_ndims);
+            std.debug.assert(dim < t_ndims);
             // TODO: Support splits that don't divide evenly
             // Give the option of how to evaluate the uneven part
             // - Pad it to evenly divide
             // - Unfuse into two separate loops (gives more control for unrolling)
             std.debug.assert(@mod(t_shape[dim], count) == 0);
+
+            if (count == 1 or count == t_shape[dim]) {
+                return Self;
+            }
+
             const pre = if (dim > 0) t_shape[0..dim].* else .{};
             const post = if (dim < t_ndims - 1) t_shape[dim + 1 .. t_ndims].* else .{};
             return Tensor(ShapeToArray(dtype, t_ndims + 1, pre ++ .{ @divExact(t_shape[dim], count), count } ++ post));
         }
 
         pub fn split(comptime b: *const Self, comptime dim: u8, comptime count: u8) Split(dim, count) {
+            if (Split(dim, count) == Self) {
+                return b.*;
+            }
+
             var layout: Layout = b.layout;
             layout.ndims += 1;
             layout.shape = &Split(dim, count).t_shape;
@@ -203,11 +208,12 @@ pub fn Tensor(comptime Array: type) type {
             };
         }
 
+        const Vec: type = @Vector(t_shape[t_ndims - 1], dtype);
         /// Vectorized contiguous dim of the buffer.
         pub const Vectorized: type = t: {
             // do not vectorize a buffer that is already vectorized.
             if (Base == dtype) {
-                var Type: type = @Vector(t_shape[t_ndims - 1], dtype);
+                var Type: type = Vec;
                 for (0..t_ndims - 1) |dim| {
                     Type = [t_shape[t_ndims - dim - 2]]Type;
                 }
@@ -217,61 +223,70 @@ pub fn Tensor(comptime Array: type) type {
             break :t void;
         };
 
+        // By setting NonVectorized to void if it is already vectorized
+        // the following function is removed from the namespace of this type
         const NonVectorized = if (Vectorized != void) Self else void;
-
         pub fn vectorize(b: *const NonVectorized) Vectorized {
             std.debug.assert(b.layout.strides[b.layout.ndims - 1] == 1);
-            var layout = b.layout;
-            layout.vectorized = true;
-            layout.strides = layout.strides[0 .. layout.strides.len - 1];
-            return .{ .layout = layout };
+            return .{ .layout = b.layout };
         }
 
-        fn buildLoop(b: *const Self, allocator: std.mem.Allocator, dim: u8) !?*loop.Loop {
-            if (dim >= b.layout.ndims) {
+        fn buildLoop(comptime b: *const Self, comptime dim: u8, inner: ?*const loop.Loop) ?loop.Loop {
+            if (dim >= t_ndims) {
                 return null;
             }
-            if (b.layout.vectorized and dim == b.layout.ndims - 1) {
+            if (Base == Vec and dim == b.layout.ndims - 1) {
                 return null;
             } else {
-                const new_loop = try allocator.create(loop.Loop);
-                new_loop.* = .{
-                    .lower = b.layout.skew[dim],
+                return .{
+                    // .lower = b.layout.skew[dim],
+                    .lower = 0,
                     .upper = b.layout.shape[dim],
+                    .inner = inner,
                 };
-                return new_loop;
             }
         }
 
-        pub fn nest(b: *const Self, allocator: std.mem.Allocator) !loop.Nest {
+        pub fn nest(
+            comptime b: *const Self,
+            comptime float_mode: std.builtin.FloatMode,
+        ) loop.Nest {
             if (b.layout.ndims == 0) {
-                @panic("cannot generate loop nest for 0 dimensional buffer");
+                @compileError("cannot generate loop nest for 0 dimensional buffer");
             }
-            const top = try b.buildLoop(allocator, 0);
-            var curr = top;
 
-            for (1..b.layout.ndims) |dim| {
-                if (curr) |curr_loop| {
-                    const inner = try b.buildLoop(allocator, @intCast(dim));
-                    if (inner) |inner_loop| {
-                        curr_loop.inner = inner_loop;
+            const loop_nest: ?loop.Loop = comptime blk: {
+                var curr: ?loop.Loop = null;
+                for (0..b.layout.ndims) |dim| {
+                    if (curr) |curr_loop| {
+                        curr = b.buildLoop(b.layout.ndims - dim - 1, &curr_loop);
+                    } else {
+                        curr = b.buildLoop(b.layout.ndims - dim - 1, null);
                     }
-                    curr = inner;
-                } else {
-                    break;
                 }
-            }
-
-            return .{
-                .loop = top,
+                break :blk curr;
             };
+
+            if (loop_nest) |top_loop| {
+                return .{
+                    .ndims = b.layout.ndims,
+                    .float_mode = float_mode,
+                    .loop = &top_loop,
+                };
+            } else {
+                return .{
+                    .ndims = b.layout.ndims,
+                    .float_mode = float_mode,
+                    .loop = null,
+                };
+            }
         }
     };
 }
 
 test "init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const t = Tensor([16][8]f32).init();
+    const t = comptime Tensor([16][8]f32).init();
     var d = try t.alloc(arena.allocator());
     defer arena.deinit();
 
@@ -297,7 +312,7 @@ test "split_vectorize" {
         .split(0, 4)
         .vectorize();
     try std.testing.expect(@TypeOf(svt) == Tensor([4][4]@Vector(8, f32)));
-    try std.testing.expectEqualSlices(usize, &.{ 32, 8 }, svt.layout.strides);
+    try std.testing.expectEqualSlices(usize, &.{ 32, 8, 1 }, svt.layout.strides);
 }
 
 test "nest" {
@@ -310,9 +325,8 @@ test "nest" {
             .inner = null,
         },
     };
-    const t = Tensor([16][8]f32).init();
-
-    const nest = try t.nest(arena.allocator());
+    const t = comptime Tensor([16][8]f32).init();
+    const nest = comptime t.nest(.optimized);
     try std.testing.expectEqualDeep(expected, nest.loop);
 }
 
@@ -322,20 +336,20 @@ test "vectorize_nest" {
         .upper = 16,
         .inner = null,
     };
-    const t = Tensor([16][8]f32).init();
+    const t = comptime Tensor([16][8]f32).init().vectorize();
     defer arena.deinit();
 
-    const nest = try t.vectorize().nest(arena.allocator());
+    const nest = comptime t.nest(.optimized);
     try std.testing.expectEqualDeep(expected, nest.loop);
 }
 
 test "nest_eval" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const t = Tensor([16][8]i32).init();
+    const t = comptime Tensor([16][8]i32).init();
     defer arena.deinit();
 
-    const nest = try t.nest(arena.allocator());
-    const B = Tensor([16][8]i32).Buffer;
+    const nest = comptime t.nest(.optimized);
+    const B = comptime Tensor([16][8]i32).Buffer;
     const Args = struct {
         b: B,
     };
@@ -348,7 +362,7 @@ test "nest_eval" {
     }.logic;
 
     var b = try t.alloc(arena.allocator());
-    nest.eval(Args, Args, 2, .{&b}, .{&b}, logic);
+    nest.eval(Args, Args, .{&b}, .{&b}, logic);
     try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
 }
 
@@ -356,9 +370,8 @@ test "vectorize_nest_eval" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const t = Tensor([16][8]i32).init().vectorize();
+    const t = comptime Tensor([16][8]i32).init().vectorize();
     try std.testing.expect(@TypeOf(t).Base == @Vector(8, i32));
-    const nest = try t.nest(arena.allocator());
     const B = @TypeOf(t).Buffer;
     const Args = struct {
         b: B,
@@ -375,19 +388,22 @@ test "vectorize_nest_eval" {
     }.logic;
 
     var b = try t.alloc(arena.allocator());
-    nest.eval(Args, Args, 2, .{&b}, .{&b}, logic);
+    const nest = comptime t.nest(.optimized);
+    nest.eval(Args, Args, .{&b}, .{&b}, logic);
     try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
 }
 
-test "split_vectorize_nest_eval" {
+test "double_split_vectorize_nest_eval" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const t = comptime Tensor([16][8]i32).init()
-        .split(0, 8)
+    const t = comptime Tensor([128][4]i32).init()
+        .split(0, 16)
+        .split(1, 4)
         .vectorize();
+
     const B = @TypeOf(t).Buffer;
-    try std.testing.expect(@TypeOf(t) == Tensor([2][8]@Vector(8, i32)));
+    try std.testing.expect(@TypeOf(t) == Tensor([8][4][4]@Vector(4, i32)));
 
     const Args = struct { b: B };
     const logic: loop.Logic(Args, Args) = struct {
@@ -397,8 +413,9 @@ test "split_vectorize_nest_eval" {
         }
     }.logic;
 
-    const nest = try t.nest(arena.allocator());
     var b = try t.alloc(arena.allocator());
-    nest.eval(Args, Args, 2, .{&b}, .{&b}, logic);
-    try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
+
+    const nest = comptime t.nest(.optimized);
+    nest.eval(Args, Args, .{&b}, .{&b}, logic);
+    try std.testing.expectEqualSlices(i32, &(.{1} ** (128 * 4)), b.raw[0..(128 * 4)]);
 }

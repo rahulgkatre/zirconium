@@ -8,20 +8,22 @@ fn validateInOutType(comptime Type: type) void {
 
 pub const Nest = struct {
     loop: ?*const Loop,
+    ndims: u8,
+    float_mode: std.builtin.FloatMode,
 
     pub inline fn eval(
         nest: *const Nest,
         comptime In: type,
         comptime Out: type,
-        comptime ndims: u8,
         in: anytype,
         out: anytype,
         comptime logic: Logic(In, Out),
     ) void {
+        @setFloatMode(nest.float_mode);
         if (nest.loop) |loop| {
-            loop.eval(In, Out, ndims, in, out, logic);
+            loop.eval(In, Out, nest.ndims, in, out, logic);
         } else {
-            @call(.always_inline, logic, in ++ out ++ .{&(.{0} ** ndims)});
+            @call(.always_inline, logic, in ++ out ++ .{&(.{0} ** nest.ndims)});
         }
     }
 };
@@ -98,6 +100,6 @@ pub const Loop = struct {
         comptime logic: Logic(In, Out),
     ) void {
         var idx: [ndims]usize = .{0} ** ndims;
-        nestEval(loop, In, Out, ndims, 0, in, out, @constCast(&idx), logic);
+        nestEval(loop, In, Out, ndims, 0, in, out, &idx, logic);
     }
 };
