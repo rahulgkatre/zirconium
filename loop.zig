@@ -1,5 +1,7 @@
 const std = @import("std");
 const buffer = @import("buffer.zig");
+const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
+const IterationSpace = @import("iterspace.zig").IterationSpace;
 
 pub const Nest = struct {
     pub const Loop = struct {
@@ -152,4 +154,167 @@ pub fn VectorizedLogic(comptime Const: type, comptime Mutable: type, comptime nd
         .params = &params,
         .return_type = void,
     } });
+}
+
+test "nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const t = comptime IterationSpace([16][8]f32).init();
+    const nest = comptime t.nest(.optimized);
+    const expected = comptime &Nest.Loop{
+        .upper = 16,
+        .block_info = .{
+            .num_blocks = 16,
+            .orig_dim = 0,
+            .block_size = 1,
+        },
+        .inner = &.{
+            .upper = 8,
+            .inner = null,
+            .block_info = .{
+                .num_blocks = 8,
+                .orig_dim = 1,
+                .block_size = 1,
+            },
+        },
+    };
+    try std.testing.expectEqualDeep(expected, nest.loop);
+}
+
+test "vectorize_nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const t = comptime IterationSpace([16][8]f32).init().vectorize();
+    defer arena.deinit();
+
+    const nest = comptime t.nest(.optimized);
+    const expected = comptime &Nest.Loop{
+        .upper = 16,
+        .block_info = .{
+            .block_size = 1,
+            .num_blocks = 16,
+            .orig_dim = 0,
+        },
+        .inner = &Nest.Loop{
+            .upper = 8,
+            .vector = true,
+            .step_size = 8,
+            .block_info = .{
+                .num_blocks = 8,
+                .block_size = 1,
+                .orig_dim = 1,
+            },
+        },
+    };
+    try std.testing.expectEqualDeep(expected, nest.loop);
+}
+
+test "nest_eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const t = comptime IterationSpace([16][8]i32).init();
+    defer arena.deinit();
+
+    const nest = comptime t.nest(.optimized);
+    const B = @TypeOf(t).Arr;
+    const Args = struct {
+        b: B,
+    };
+
+    const logic: Logic(Args, Args, AllocatedBuffer(B).ndims) = struct {
+        inline fn logic(b1: *const AllocatedBuffer(B), b2: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
+            const val = b2.load(idx) + b1.constant(1);
+            b2.store(val, idx);
+        }
+    }.logic;
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(Args, Args, .{&b}, .{&b}, logic);
+    try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
+}
+
+test "vectorize_nest_eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const t = comptime IterationSpace([16][8]i32).init().vectorize();
+    try std.testing.expect(@TypeOf(t).Vec == @Vector(8, i32));
+    const B = [16][8]i32;
+    const Args = struct {
+        b: B,
+    };
+
+    const logic: Logic(Args, Args, AllocatedBuffer(B).ndims) = comptime struct {
+        // Idea: using callconv() require a GPU kernel here, or inline this function
+        // into a surrounding GPU kernel. Unraveling method would require to be bound to GPU
+        // thread / group ids
+        inline fn logic(b1: *const AllocatedBuffer(B), b2: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
+            const val = b2.load(idx) + b1.constant(1);
+            b2.store(val, idx);
+        }
+    }.logic;
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    const nest = comptime t.nest(.optimized);
+    nest.eval(Args, Args, .{&b}, .{&b}, logic);
+    try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
+}
+
+test "double_split_vectorized_nest_eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const t = comptime IterationSpace([128][4]bool).init()
+        .split(0, 16)
+        .split(1, 4)
+        .vectorize();
+    try std.testing.expect(@TypeOf(t) == IterationSpace([8][4][4]@Vector(4, bool)));
+
+    const B = [128][4]bool;
+    const Args = struct { b: B };
+    const logic: Logic(void, Args, AllocatedBuffer(B).ndims) = struct {
+        inline fn logic(b: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
+            std.debug.assert(@reduce(.And, b.load(idx) == b.constant(false)));
+            b.store(b.constant(true), idx);
+        }
+    }.logic;
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    const nest = comptime t.nest(.optimized);
+    const expected = comptime &Nest.Loop{
+        .upper = 8,
+        .block_info = .{
+            .num_blocks = 8,
+            .block_size = 16,
+            .orig_dim = 0,
+        },
+        .inner = &Nest.Loop{
+            .upper = 4,
+            .block_info = .{
+                .num_blocks = 4,
+                .block_size = 4,
+                .orig_dim = 0,
+            },
+            .inner = &Nest.Loop{
+                .upper = 4,
+                .block_info = .{
+                    .num_blocks = 4,
+                    .block_size = 1,
+                    .orig_dim = 0,
+                },
+                .inner = &Nest.Loop{
+                    .upper = 4,
+                    .step_size = 4,
+                    .vector = true,
+                    .block_info = .{
+                        .num_blocks = 4,
+                        .block_size = 1,
+                        .orig_dim = 1,
+                    },
+                },
+            },
+        },
+    };
+    nest.eval(void, Args, .{}, .{&b}, logic);
+    try std.testing.expectEqualDeep(expected, nest.loop);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 512), b.raw[0..512]);
 }
