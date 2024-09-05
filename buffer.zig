@@ -3,25 +3,28 @@ const loop = @import("loop.zig");
 const utils = @import("utils.zig");
 
 pub fn AllocatedBuffer(comptime Array: type) type {
+    return AllocatedVecBuffer(Array, null);
+}
+
+pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
         const SIMD_ALIGN = @alignOf(Vec);
-        const alignment = @max(SIMD_ALIGN, CACHE_LINE);
+        pub const alignment = @max(SIMD_ALIGN, CACHE_LINE);
 
         layout: utils.Layout,
         multi: *Array align(alignment),
-        raw: [*]dtype align(alignment),
+        raw: []dtype align(alignment),
 
-        const dtype = utils.Datatype(Array);
+        pub const dtype = utils.Datatype(Array);
         const ndims = utils.extractNdims(Array);
         const shape = utils.extractShape(Array);
         /// Vectorized contiguous dim of the buffer.
-        pub const Vec: type = @Vector(shape[ndims - 1], dtype);
+        pub const Vec: type = if (vec_len) |len| @Vector(len, dtype) else void;
         pub const Arr: type = Array;
 
-        const ThisUnit = utils.Unit(Array);
-        const ThisVectorized = utils.Vectorized(Array);
+        const Unit = if (Vec != void) Vec else dtype;
 
         const numel: ?comptime_int = blk: {
             var n = 1;
@@ -69,12 +72,12 @@ pub fn AllocatedBuffer(comptime Array: type) type {
                     // .parallelized = &(.{false} ** ndims),
                 },
                 .multi = @alignCast(@ptrCast(slice)),
-                .raw = @alignCast(@ptrCast(slice)),
+                .raw = slice,
             };
         }
 
-        pub fn constant(_: Self, val: dtype) ThisUnit {
-            if (ThisUnit == dtype) {
+        pub fn constant(_: Self, val: dtype) Unit {
+            if (Unit == dtype) {
                 return val;
             } else {
                 return @splat(val);
@@ -84,26 +87,27 @@ pub fn AllocatedBuffer(comptime Array: type) type {
         pub inline fn unravel(b: Self, idx: [ndims]usize) usize {
             var i: usize = 0;
             inline for (0..ndims) |d| {
-                comptime if (ThisUnit != dtype and d == ndims - 1) break;
                 i += idx[d] * b.layout.strides[d];
             }
             return i;
         }
 
-        pub inline fn load(b: Self, idx: [ndims]usize) ThisUnit {
-            if (comptime ThisUnit != dtype) {
-                const val: *const ThisUnit align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..shape[ndims - 1]]));
-                return @as(ThisUnit, val.*);
+        pub inline fn load(b: Self, idx: [ndims]usize) Unit {
+            if (comptime Unit != dtype) {
+                const len = @typeInfo(Unit).Vector.len;
+                const val: *const Unit align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..len]));
+                return @as(Unit, val.*);
             } else {
                 return b.raw[b.unravel(idx)];
             }
         }
 
-        pub inline fn store(b: Self, val: ThisUnit, idx: [ndims]usize) void {
-            if (comptime ThisUnit != dtype) {
-                const dst: [*]ThisUnit align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..shape[ndims - 1]]));
+        pub inline fn store(b: Self, val: Unit, idx: [ndims]usize) void {
+            if (comptime vec_len) |len| {
+                const dst: *[len]dtype align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..len]));
                 // TODO: Need to verify what asm this generates, needs to be vmovaps
-                @memcpy(@as([*]dtype, @ptrCast(dst)), &@as([shape[ndims - 1]]dtype, val));
+                dst.* = val;
+                // @memcpy(@as([*]dtype, @ptrCast(dst)), &@as([shape[ndims - 1]]dtype, val));
             } else {
                 b.raw[b.unravel(idx)] = val;
             }

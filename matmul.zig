@@ -12,17 +12,17 @@ const SIMD_ALIGN = @alignOf(@Vector(SIMD_WIDTH, f32));
 const ALIGN = @max(SIMD_ALIGN, CACHE_LINE);
 
 const Matrix = *align(ALIGN) [MATRIX_SIZE][MATRIX_SIZE]f32;
-const ConstMatrix = *align(ALIGN) const [MATRIX_SIZE][MATRIX_SIZE]f32;
+const InMatrix = *align(ALIGN) const [MATRIX_SIZE][MATRIX_SIZE]f32;
 
 const BlockedMatrix = *align(ALIGN) [NBLOCKS][BLOCK_SIZE][NBLOCKS][BLOCK_SIZE]f32;
-const ConstBlockedMatrix = *align(ALIGN) const [NBLOCKS][BLOCK_SIZE][NBLOCKS][BLOCK_SIZE]f32;
+const InBlockedMatrix = *align(ALIGN) const [NBLOCKS][BLOCK_SIZE][NBLOCKS][BLOCK_SIZE]f32;
 
 const SimdBlockedMatrix = *align(ALIGN) [NSIMD][SIMD_WIDTH][NSIMD][SIMD_WIDTH]f32;
-const ConstSimdBlockedMatrix = *align(ALIGN) const [NSIMD][SIMD_WIDTH][NSIMD][SIMD_WIDTH]f32;
+const InSimdBlockedMatrix = *align(ALIGN) const [NSIMD][SIMD_WIDTH][NSIMD][SIMD_WIDTH]f32;
 
 const Block = *align(ALIGN) [BLOCK_SIZE][BLOCK_SIZE]f32;
 
-const ConstBlock = *align(ALIGN) const [BLOCK_SIZE][BLOCK_SIZE]f32;
+const InBlock = *align(ALIGN) const [BLOCK_SIZE][BLOCK_SIZE]f32;
 
 pub fn init(buffer: *[MATRIX_SIZE * MATRIX_SIZE]f32) void {
     var prng = std.rand.DefaultPrng.init(0);
@@ -31,7 +31,7 @@ pub fn init(buffer: *[MATRIX_SIZE * MATRIX_SIZE]f32) void {
     }
 }
 
-pub fn naive_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
+pub fn naive_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     for (0..MATRIX_SIZE) |i| {
         for (0..MATRIX_SIZE) |j| {
             c[i][j] = 0.0;
@@ -42,11 +42,11 @@ pub fn naive_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
     }
 }
 
-pub fn blocked_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
+pub fn blocked_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b: ConstBlockedMatrix = @ptrCast(b);
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b: InBlockedMatrix = @ptrCast(b);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     for (0..NBLOCKS) |bi| {
@@ -65,7 +65,7 @@ pub fn blocked_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
     }
 }
 
-pub fn transposed_blocked_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
+pub fn transposed_blocked_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
     var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
@@ -75,8 +75,8 @@ pub fn transposed_blocked_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
             b_t[i][j] = b[j][i];
         }
     }
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b_t: ConstBlockedMatrix = @ptrCast(b_t);
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b_t: InBlockedMatrix = @ptrCast(b_t);
     var blocked_c: BlockedMatrix = @ptrCast(c);
     for (0..NBLOCKS) |bi| {
         for (0..NBLOCKS) |bj| {
@@ -93,7 +93,7 @@ pub fn transposed_blocked_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
     }
 }
 
-pub fn transposed_blocked_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
+pub fn transposed_blocked_simd_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
     var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
@@ -103,8 +103,8 @@ pub fn transposed_blocked_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) v
             b_t[i][j] = b[j][i];
         }
     }
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b_t: ConstBlockedMatrix = @ptrCast(b_t);
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b_t: InBlockedMatrix = @ptrCast(b_t);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     var simd_a: @Vector(BLOCK_SIZE, f32) = undefined;
@@ -125,7 +125,7 @@ pub fn transposed_blocked_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) v
     }
 }
 
-pub fn transposed_blocked_local_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
+pub fn transposed_blocked_local_simd_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
     var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
@@ -135,8 +135,8 @@ pub fn transposed_blocked_local_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Mat
             b_t[i][j] = b[j][i];
         }
     }
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b_t: ConstBlockedMatrix = @ptrCast(b_t);
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b_t: InBlockedMatrix = @ptrCast(b_t);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     var local_a: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
@@ -173,9 +173,9 @@ pub fn transposed_blocked_local_simd_gemm(a: ConstMatrix, b: ConstMatrix, c: Mat
     }
 }
 
-pub fn blocked_local_simd_fma_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b: ConstBlockedMatrix = @ptrCast(b);
+pub fn blocked_local_simd_fma_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b: InBlockedMatrix = @ptrCast(b);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     var local_a: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
@@ -215,17 +215,17 @@ pub fn blocked_local_simd_fma_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) vo
     }
 }
 
-pub fn blocked_local_blocked_simd_fma_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b: ConstBlockedMatrix = @ptrCast(b);
+pub fn blocked_local_blocked_simd_fma_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b: InBlockedMatrix = @ptrCast(b);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     var local_a: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
     var local_b: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
     var local_c: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
 
-    const simd_block_a: ConstSimdBlockedMatrix = @ptrCast(&local_a);
-    const simd_block_b: ConstSimdBlockedMatrix = @ptrCast(&local_b);
+    const simd_block_a: InSimdBlockedMatrix = @ptrCast(&local_a);
+    const simd_block_b: InSimdBlockedMatrix = @ptrCast(&local_b);
     const simd_block_c: SimdBlockedMatrix = @ptrCast(&local_c);
 
     var local_simd_b: [SIMD_WIDTH]@Vector(SIMD_WIDTH, f32) align(ALIGN) = undefined;
@@ -267,17 +267,17 @@ pub fn blocked_local_blocked_simd_fma_gemm(a: ConstMatrix, b: ConstMatrix, c: Ma
     }
 }
 
-pub fn parallel_blocked_local_blocked_simd_fma_gemm(a: ConstMatrix, b: ConstMatrix, c: Matrix) void {
-    const blocked_a: ConstBlockedMatrix = @ptrCast(a);
-    const blocked_b: ConstBlockedMatrix = @ptrCast(b);
+pub fn parallel_blocked_local_blocked_simd_fma_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
+    const blocked_a: InBlockedMatrix = @ptrCast(a);
+    const blocked_b: InBlockedMatrix = @ptrCast(b);
     var blocked_c: BlockedMatrix = @ptrCast(c);
 
     var local_a: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
     var local_b: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
     var local_c: [BLOCK_SIZE][BLOCK_SIZE]f32 align(ALIGN) = undefined;
 
-    const simd_block_a: ConstSimdBlockedMatrix = @ptrCast(&local_a);
-    const simd_block_b: ConstSimdBlockedMatrix = @ptrCast(&local_b);
+    const simd_block_a: InSimdBlockedMatrix = @ptrCast(&local_a);
+    const simd_block_b: InSimdBlockedMatrix = @ptrCast(&local_b);
     const simd_block_c: SimdBlockedMatrix = @ptrCast(&local_c);
 
     var local_simd_b: [SIMD_WIDTH]@Vector(SIMD_WIDTH, f32) align(ALIGN) = undefined;

@@ -1,14 +1,15 @@
 const std = @import("std");
 const loop = @import("loop.zig");
 const utils = @import("utils.zig");
+const func = @import("func.zig");
 const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
 
 pub fn IterationSpace(comptime Array: type) type {
     return struct {
         const Self = @This();
-        const dtype: type = utils.Datatype(Array);
-        const ndims = utils.extractNdims(Array);
-        const shape: [ndims]usize = utils.extractShape(Array);
+        pub const dtype: type = utils.Datatype(Array);
+        pub const ndims = utils.extractNdims(Array);
+        pub const shape: [ndims]usize = utils.extractShape(Array);
         const ThisUnit = utils.Unit(Array);
         const ThisVectorized = utils.Vectorized(Array);
         const default_block_info = blk: {
@@ -23,13 +24,13 @@ pub fn IterationSpace(comptime Array: type) type {
             break :blk splits;
         };
 
-        orig_ndims: u8,
+        idx_ndims: u8,
         block_info: *const [ndims]utils.BlockInfo = &default_block_info,
         vector: bool = (ThisUnit == Vec),
 
         pub fn init() Self {
             return .{
-                .orig_ndims = ndims,
+                .idx_ndims = ndims,
             };
         }
 
@@ -70,7 +71,7 @@ pub fn IterationSpace(comptime Array: type) type {
             };
 
             return .{
-                .orig_ndims = b.orig_ndims,
+                .idx_ndims = b.idx_ndims,
                 .block_info = b.block_info[0..dim] ++ .{ block_info1, block_info2 } ++ b.block_info[dim + 1 .. ndims],
             };
         }
@@ -82,58 +83,16 @@ pub fn IterationSpace(comptime Array: type) type {
         // the following function is removed from the namespace of this type
         const NonVectorized = if (ThisVectorized != void) Self else void;
         pub fn vectorize(b: *const NonVectorized) IterationSpace(ThisVectorized) {
-            return .{ .block_info = b.block_info, .orig_ndims = b.orig_ndims };
-        }
-
-        fn buildLoop(comptime b: *const Self, comptime dim: u8, inner: ?*const loop.Nest.Loop) ?loop.Nest.Loop {
-            if (dim >= ndims) {
-                return null;
-            }
-
-            return .{
-                // .lower = b.layout.skew[dim],
-                .lower = 0,
-                .upper = shape[dim],
-                .inner = inner,
-                .block_info = b.block_info[dim],
-                .vector = (ThisUnit == Vec and dim == ndims - 1),
-                .step_size = if (ThisUnit == Vec and dim == ndims - 1) shape[ndims - 1] else 1,
-            };
+            return .{ .block_info = b.block_info, .idx_ndims = b.idx_ndims };
         }
 
         pub fn nest(
-            comptime b: *const Self,
-            comptime float_mode: std.builtin.FloatMode,
-        ) loop.Nest {
-            if (ndims == 0) {
-                @compileError("cannot generate loop nest for 0 dimensional iteration space");
-            }
-
-            const loop_nest: ?loop.Nest.Loop = comptime blk: {
-                var curr: ?loop.Nest.Loop = null;
-                for (0..ndims) |dim| {
-                    if (curr) |curr_loop| {
-                        curr = b.buildLoop(ndims - dim - 1, &curr_loop);
-                    } else {
-                        curr = b.buildLoop(ndims - dim - 1, null);
-                    }
-                }
-                break :blk curr;
-            };
-
-            if (loop_nest) |top_loop| {
-                return .{
-                    .orig_ndims = b.orig_ndims,
-                    .float_mode = float_mode,
-                    .loop = &top_loop,
-                };
-            } else {
-                return .{
-                    .orig_ndims = b.orig_ndims,
-                    .float_mode = float_mode,
-                    .loop = null,
-                };
-            }
+            comptime self: *const Self,
+            comptime In: type,
+            comptime InOut: type,
+            comptime iter_logic: func.IterationLogic(In, InOut, self.idx_ndims),
+        ) loop.Nest(In, InOut, self.idx_ndims) {
+            return loop.Nest(In, InOut, self.idx_ndims).init(self, iter_logic);
         }
     };
 }

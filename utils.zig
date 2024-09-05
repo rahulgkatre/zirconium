@@ -27,7 +27,7 @@ pub fn Datatype(comptime Array: type) type {
     @compileError("Must provide an array type (e.g. [M][N][P]DType), received " ++ std.fmt.comptimePrint("{any}", .{Array}));
 }
 
-fn extractNdims(comptime Array: type) u8 {
+pub fn extractNdims(comptime Array: type) u8 {
     switch (@typeInfo(Array)) {
         .Pointer => |info| if (info.size == .Many) return 1 + IterationSpace(info.child).ndims,
         .Array => |info| return 1 + IterationSpace(info.child).ndims,
@@ -38,7 +38,7 @@ fn extractNdims(comptime Array: type) u8 {
     @compileError("Must provide an array type (e.g. [M][N][P]DType), received " ++ std.fmt.comptimePrint("{any}", .{Array}));
 }
 
-fn extractShape(comptime Array: type) [extractNdims(Array)]usize {
+pub fn extractShape(comptime Array: type) [extractNdims(Array)]usize {
     switch (@typeInfo(Array)) {
         .Pointer => |info| if (info.size == .Many) return .{null} ++ extractShape(info.child),
         .Array => |info| return .{info.len} ++ extractShape(info.child),

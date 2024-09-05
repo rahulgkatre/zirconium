@@ -1,320 +1,305 @@
 const std = @import("std");
-const buffer = @import("buffer.zig");
+const utils = @import("utils.zig");
+const func = @import("func.zig");
+
 const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
 const IterationSpace = @import("iterspace.zig").IterationSpace;
 
-pub const Nest = struct {
-    pub const Loop = struct {
-        lower: usize = 0,
-        upper: usize,
-        inner: ?*const Loop = null,
+pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) type {
+    return struct {
+        const IterLogicWrapper = struct {
+            eval: fn (anytype, anytype, [idx_ndims]usize) callconv(.Inline) void,
+        };
 
-        step_size: usize = 1,
-        unrolled: bool = false,
-        vector: bool = false,
-        block_info: buffer.BlockInfo,
+        // common interface here is that both have an eval() function
+        const LoopBodyItem = union(enum) { loop: Loop, iter_logic: IterLogicWrapper };
 
-        inline fn evalRouter(
-            comptime loop: *const Loop,
-            comptime Const: type,
-            comptime Mutable: type,
-            comptime ndims: u8,
-            const_args: anytype,
-            mut_args: anytype,
-            base_idx: [ndims]usize,
-            comptime logic: Logic(Const, Mutable, ndims),
-        ) void {
-            var idx = base_idx;
-            const base_for_dim = base_idx[loop.block_info.orig_dim];
-            var loopvar = loop.lower;
+        pub const Loop = struct {
+            lower: usize = 0,
+            upper: usize,
 
-            if (comptime loop.vector) {
-                const vectorized_logic = comptime @as(*const VectorizedLogic(Const, Mutable, ndims), @ptrCast(&logic));
-                // reinterpret the args as their corresponding vectorized versions
-                // this is always valid as VectorizedLogic would catch invalid types for Const and Mutable
-                const vectorized_logic_args = @as(*const std.meta.ArgsTuple(@typeInfo(@TypeOf(vectorized_logic)).Pointer.child), @ptrCast(&(const_args ++ mut_args ++ .{idx}))).*;
-                @call(.always_inline, vectorized_logic, vectorized_logic_args);
-            } else if (comptime loop.unrolled) {
-                inline while (loopvar < loop.upper) : (loopvar += loop.step_size) {
-                    idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
-                    // TODO: Replace inner with a []const union(logic|loop) and iterate over that slice here
-                    if (comptime loop.inner) |inner|
-                        inner.evalRouter(Const, Mutable, ndims, const_args, mut_args, idx, logic)
-                    else
-                        @call(.always_inline, logic, const_args ++ mut_args ++ .{idx});
-                    idx[loop.block_info.orig_dim] = base_for_dim;
-                }
-            } else {
-                while (loopvar < loop.upper) : (loopvar += loop.step_size) {
-                    idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
-                    if (comptime loop.inner) |inner|
-                        inner.evalRouter(Const, Mutable, ndims, const_args, mut_args, idx, logic)
-                    else
-                        @call(.always_inline, logic, const_args ++ mut_args ++ .{idx});
-                    idx[loop.block_info.orig_dim] = base_for_dim;
+            step_size: usize = 1,
+            unrolled: bool = false,
+            vector: bool = false,
+            block_info: utils.BlockInfo,
+
+            body: []const LoopBodyItem = &.{},
+
+            inline fn eval(
+                comptime loop: *const @This(),
+                in: anytype,
+                inout: anytype,
+                base_idx: [idx_ndims]usize,
+            ) void {
+                var idx = base_idx;
+                const base_for_dim = base_idx[loop.block_info.orig_dim];
+                var loopvar = loop.lower;
+
+                inline for (loop.body) |item| {
+                    switch (item) {
+                        inline else => |inner| if (comptime loop.unrolled) {
+                            inline while (loopvar < loop.upper) : (loopvar += loop.step_size) {
+                                idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
+                                inner.eval(in, inout, idx);
+                                idx[loop.block_info.orig_dim] = base_for_dim;
+                            }
+                        } else {
+                            while (loopvar < loop.upper) : (loopvar += loop.step_size) {
+                                idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
+                                inner.eval(in, inout, idx);
+                                idx[loop.block_info.orig_dim] = base_for_dim;
+                            }
+                        },
+                    }
                 }
             }
+        };
+
+        body: []const Loop,
+        idx_ndims: u8,
+        iter_ndims: u8,
+
+        fn buildLoop(comptime iter_space: anytype, comptime dim: u8, body: []const LoopBodyItem) Loop {
+            const IterSpace: type = @TypeOf(iter_space.*);
+            const vector = iter_space.vector and dim == IterSpace.ndims - 1;
+            return .{
+                .lower = 0,
+                .upper = IterSpace.shape[dim],
+                .body = body,
+                .block_info = iter_space.block_info[dim],
+                .vector = vector,
+                .step_size = if (vector) IterSpace.shape[IterSpace.ndims - 1] else 1,
+            };
+        }
+
+        pub fn init(
+            comptime iter_space: anytype,
+            comptime iter_logic: func.IterationLogic(In, InOut, idx_ndims),
+        ) @This() {
+            const IterSpace: type = @TypeOf(iter_space.*);
+            if (IterSpace.ndims == 0) {
+                @compileError("cannot generate loop nest for 0 dimensional iteration space");
+            }
+
+            const iter_logic_wrapper: IterLogicWrapper = .{ .eval = struct {
+                inline fn eval(in: anytype, inout: anytype, idx: [idx_ndims]usize) void {
+                    if (comptime iter_space.vector) {
+                        const vec_len = IterSpace.shape[IterSpace.ndims - 1];
+                        const VecLogic: type = func.VectorizedLogic(In, InOut, idx_ndims, vec_len);
+                        const vectorized_logic = comptime @as(*const VecLogic, @ptrCast(&iter_logic));
+                        const vectorized_logic_args = @as(*const std.meta.ArgsTuple(VecLogic), @ptrCast(&(in ++ inout ++ .{idx}))).*;
+                        @call(.always_inline, vectorized_logic, vectorized_logic_args);
+                    } else {
+                        @call(.always_inline, iter_logic, in ++ inout ++ .{idx});
+                    }
+                }
+            }.eval };
+
+            const body: []const Loop = comptime blk: {
+                var body: []const LoopBodyItem = &.{LoopBodyItem{ .iter_logic = iter_logic_wrapper }};
+                for (0..IterSpace.ndims) |dim| {
+                    const loop = buildLoop(iter_space, IterSpace.ndims - dim - 1, body);
+                    body = &.{LoopBodyItem{ .loop = loop }};
+                }
+
+                break :blk &.{body[0].loop};
+            };
+
+            return .{
+                .iter_ndims = IterSpace.ndims,
+                .idx_ndims = iter_space.idx_ndims,
+                .body = body,
+            };
+        }
+
+        pub fn evalFn(
+            comptime nest: *const @This(),
+            // comptime iter_logic: func.IterationLogic(In, InOut, nest.idx_ndims),
+        ) fn (anytype, anytype) callconv(.Inline) void {
+            return comptime struct {
+                inline fn eval(
+                    in: anytype,
+                    inout: anytype,
+                ) void {
+                    const idx: [nest.idx_ndims]usize = .{0} ** nest.idx_ndims;
+                    inline for (nest.body) |loop| {
+                        loop.eval(in, inout, idx);
+                    }
+                }
+            }.eval;
+        }
+
+        pub inline fn eval(
+            comptime nest: *const @This(),
+            in: anytype,
+            inout: anytype,
+        ) void {
+            const eval_fn = comptime nest.evalFn();
+            eval_fn(in, inout);
         }
     };
+}
 
-    loop: ?*const Loop,
-    orig_ndims: u8,
-    float_mode: std.builtin.FloatMode,
-
-    pub inline fn eval(
-        comptime nest: *const Nest,
-        comptime Const: type,
-        comptime Mutable: type,
-        // TODO: Restrict these types
-        const_args: anytype,
-        mut_args: anytype,
-        comptime logic: Logic(Const, Mutable, nest.orig_ndims),
-    ) void {
-        @setFloatMode(nest.float_mode);
-
-        if (nest.loop) |loop| {
-            const idx: [nest.orig_ndims]usize = .{0} ** nest.orig_ndims;
-            loop.evalRouter(Const, Mutable, nest.orig_ndims, const_args, mut_args, idx, logic);
-        } else {
-            if (comptime Const != void) {
-                @call(.always_inline, logic, const_args ++ mut_args ++ .{&(.{0} ** nest.orig_ndims)});
-            } else {
-                @call(.always_inline, logic, mut_args ++ .{&(.{0} ** nest.orig_ndims)});
-            }
-        }
-    }
+const s = IterationSpace([16][8]bool).init();
+const B = [16][8]bool;
+const Args = struct {
+    b: B,
 };
 
-fn validateArgsType(comptime Type: type) void {
-    switch (@typeInfo(Type)) {
-        .Struct => {},
-        else => @compileError("Invalid input/output type"),
+const test_logic: func.IterationLogic(void, Args, 2) = struct {
+    // Idea: using callconv() require a GPU kernel here, or inline this function
+    // into a surrounding GPU kernel. Unraveling method would require to be bound to GPU
+    // thread / group ids
+    inline fn iter_logic(b: *AllocatedBuffer(B), idx: [2]usize) void {
+        std.testing.expectEqual(b.constant(false), b.load(idx)) catch unreachable;
+        b.store(b.constant(true), idx);
     }
-}
+}.iter_logic;
 
-pub fn Logic(comptime Const: type, comptime Mutable: type, comptime ndims: u8) type {
-    if (Const != void) validateArgsType(Const);
-    validateArgsType(Mutable);
-
-    const nparams = (if (Const != void) @typeInfo(Const).Struct.fields.len else 0) + @typeInfo(Mutable).Struct.fields.len + 1;
-    var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-    var i = 0;
-
-    if (Const != void) {
-        for (@typeInfo(Const).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *const buffer.AllocatedBuffer(field.type) };
-            i += 1;
-        }
-    }
-    for (@typeInfo(Mutable).Struct.fields) |field| {
-        params[i] = .{ .is_generic = false, .is_noalias = false, .type = *buffer.AllocatedBuffer(field.type) };
-        i += 1;
-    }
-    params[i] = .{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = [ndims]usize,
-    };
-    return @Type(.{ .Fn = .{
-        .calling_convention = std.builtin.CallingConvention.Inline,
-        .is_generic = false,
-        .is_var_args = false,
-        .params = &params,
-        .return_type = void,
-    } });
-}
-
-pub fn VectorizedLogic(comptime Const: type, comptime Mutable: type, comptime ndims: u8) type {
-    if (Const != void) validateArgsType(Const);
-    validateArgsType(Mutable);
-
-    const nparams = (if (Const != void) @typeInfo(Const).Struct.fields.len else 0) + @typeInfo(Mutable).Struct.fields.len + 1;
-    var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-    var i = 0;
-
-    if (Const != void) {
-        for (@typeInfo(Const).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *const buffer.AllocatedBuffer(buffer.Vectorized(field.type)) };
-            i += 1;
-        }
-    }
-    for (@typeInfo(Mutable).Struct.fields) |field| {
-        params[i] = .{ .is_generic = false, .is_noalias = false, .type = *buffer.AllocatedBuffer(buffer.Vectorized(field.type)) };
-        i += 1;
-    }
-    params[i] = .{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = [ndims]usize,
-    };
-    return @Type(.{ .Fn = .{
-        .calling_convention = std.builtin.CallingConvention.Inline,
-        .is_generic = false,
-        .is_var_args = false,
-        .params = &params,
-        .return_type = void,
-    } });
-}
-
-test "nest" {
+test "simple_nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const t = comptime IterationSpace([16][8]f32).init();
-    const nest = comptime t.nest(.optimized);
-    const expected = comptime &Nest.Loop{
+    const nest = s.nest(void, Args, test_logic);
+    const expected = comptime Nest(void, Args, 2).Loop{
         .upper = 16,
         .block_info = .{
             .num_blocks = 16,
             .orig_dim = 0,
             .block_size = 1,
         },
-        .inner = &.{
-            .upper = 8,
-            .inner = null,
-            .block_info = .{
-                .num_blocks = 8,
-                .orig_dim = 1,
-                .block_size = 1,
-            },
-        },
-    };
-    try std.testing.expectEqualDeep(expected, nest.loop);
-}
-
-test "vectorize_nest" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const t = comptime IterationSpace([16][8]f32).init().vectorize();
-    defer arena.deinit();
-
-    const nest = comptime t.nest(.optimized);
-    const expected = comptime &Nest.Loop{
-        .upper = 16,
-        .block_info = .{
-            .block_size = 1,
-            .num_blocks = 16,
-            .orig_dim = 0,
-        },
-        .inner = &Nest.Loop{
-            .upper = 8,
-            .vector = true,
-            .step_size = 8,
-            .block_info = .{
-                .num_blocks = 8,
-                .block_size = 1,
-                .orig_dim = 1,
-            },
-        },
-    };
-    try std.testing.expectEqualDeep(expected, nest.loop);
-}
-
-test "nest_eval" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const t = comptime IterationSpace([16][8]i32).init();
-    defer arena.deinit();
-
-    const nest = comptime t.nest(.optimized);
-    const B = @TypeOf(t).Arr;
-    const Args = struct {
-        b: B,
-    };
-
-    const logic: Logic(Args, Args, AllocatedBuffer(B).ndims) = struct {
-        inline fn logic(b1: *const AllocatedBuffer(B), b2: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
-            const val = b2.load(idx) + b1.constant(1);
-            b2.store(val, idx);
-        }
-    }.logic;
-
-    var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(Args, Args, .{&b}, .{&b}, logic);
-    try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
-}
-
-test "vectorize_nest_eval" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const t = comptime IterationSpace([16][8]i32).init().vectorize();
-    try std.testing.expect(@TypeOf(t).Vec == @Vector(8, i32));
-    const B = [16][8]i32;
-    const Args = struct {
-        b: B,
-    };
-
-    const logic: Logic(Args, Args, AllocatedBuffer(B).ndims) = comptime struct {
-        // Idea: using callconv() require a GPU kernel here, or inline this function
-        // into a surrounding GPU kernel. Unraveling method would require to be bound to GPU
-        // thread / group ids
-        inline fn logic(b1: *const AllocatedBuffer(B), b2: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
-            const val = b2.load(idx) + b1.constant(1);
-            b2.store(val, idx);
-        }
-    }.logic;
-
-    var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    const nest = comptime t.nest(.optimized);
-    nest.eval(Args, Args, .{&b}, .{&b}, logic);
-    try std.testing.expectEqualSlices(i32, &(.{1} ** 128), b.raw[0..128]);
-}
-
-test "double_split_vectorized_nest_eval" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const t = comptime IterationSpace([128][4]bool).init()
-        .split(0, 16)
-        .split(1, 4)
-        .vectorize();
-    try std.testing.expect(@TypeOf(t) == IterationSpace([8][4][4]@Vector(4, bool)));
-
-    const B = [128][4]bool;
-    const Args = struct { b: B };
-    const logic: Logic(void, Args, AllocatedBuffer(B).ndims) = struct {
-        inline fn logic(b: *AllocatedBuffer(B), idx: [AllocatedBuffer(B).ndims]usize) void {
-            std.debug.assert(@reduce(.And, b.load(idx) == b.constant(false)));
-            b.store(b.constant(true), idx);
-        }
-    }.logic;
-
-    var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    const nest = comptime t.nest(.optimized);
-    const expected = comptime &Nest.Loop{
-        .upper = 8,
-        .block_info = .{
-            .num_blocks = 8,
-            .block_size = 16,
-            .orig_dim = 0,
-        },
-        .inner = &Nest.Loop{
-            .upper = 4,
-            .block_info = .{
-                .num_blocks = 4,
-                .block_size = 4,
-                .orig_dim = 0,
-            },
-            .inner = &Nest.Loop{
-                .upper = 4,
-                .block_info = .{
-                    .num_blocks = 4,
-                    .block_size = 1,
-                    .orig_dim = 0,
-                },
-                .inner = &Nest.Loop{
-                    .upper = 4,
-                    .step_size = 4,
-                    .vector = true,
+        .body = &.{
+            .{
+                .loop = .{
+                    .upper = 8,
                     .block_info = .{
-                        .num_blocks = 4,
-                        .block_size = 1,
+                        .num_blocks = 8,
                         .orig_dim = 1,
+                        .block_size = 1,
+                    },
+                    .body = &.{
+                        .{
+                            .iter_logic = nest.body[0].body[0].loop.body[0].iter_logic,
+                        },
                     },
                 },
             },
         },
     };
-    nest.eval(void, Args, .{}, .{&b}, logic);
-    try std.testing.expectEqualDeep(expected, nest.loop);
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 512), b.raw[0..512]);
+
+    try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(.{}, .{&b});
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+}
+
+test "vector_nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const vs = comptime s.vectorize();
+    try std.testing.expect(@TypeOf(vs).Vec == @Vector(8, bool));
+    const nest = comptime vs.nest(void, Args, test_logic);
+    const expected = comptime Nest(void, Args, 2).Loop{
+        .upper = 16,
+        .block_info = .{
+            .block_size = 1,
+            .num_blocks = 16,
+            .orig_dim = 0,
+        },
+        .body = &.{
+            .{
+                .loop = .{
+                    .upper = 8,
+                    .vector = true,
+                    .step_size = 8,
+                    .block_info = .{
+                        .num_blocks = 8,
+                        .orig_dim = 1,
+                        .block_size = 1,
+                    },
+                    .body = &.{
+                        .{
+                            .iter_logic = nest.body[0].body[0].loop.body[0].iter_logic,
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(.{}, .{&b});
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+}
+
+test "split_split_vector_nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const ssv = comptime s
+        .split(1, 4)
+        .split(0, 4)
+        .vectorize();
+    try comptime std.testing.expectEqual(@TypeOf(ssv), IterationSpace([4][4][2]@Vector(4, bool)));
+
+    const nest = comptime ssv.nest(void, Args, test_logic);
+    const expected = comptime Nest(void, Args, 2).Loop{
+        .upper = 4,
+        .block_info = .{
+            .num_blocks = 4,
+            .block_size = 4,
+            .orig_dim = 0,
+        },
+        .body = &.{
+            .{
+                .loop = .{
+                    .upper = 4,
+                    .block_info = .{
+                        .num_blocks = 4,
+                        .block_size = 1,
+                        .orig_dim = 0,
+                    },
+                    .body = &.{
+                        .{
+                            .loop = .{
+                                .upper = 2,
+                                .block_info = .{
+                                    .num_blocks = 2,
+                                    .block_size = 4,
+                                    .orig_dim = 1,
+                                },
+                                .body = &.{
+                                    .{
+                                        .loop = .{
+                                            .upper = 4,
+                                            .step_size = 4,
+                                            .vector = true,
+                                            .block_info = .{
+                                                .num_blocks = 4,
+                                                .block_size = 1,
+                                                .orig_dim = 1,
+                                            },
+                                            .body = &.{
+                                                .{
+                                                    .iter_logic = nest.body[0].body[0].loop.body[0].loop.body[0].loop.body[0].iter_logic,
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    };
+    try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(.{}, .{&b});
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }

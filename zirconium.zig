@@ -1,25 +1,25 @@
 const buffer = @import("buffer.zig");
 const loop = @import("loop.zig");
-const space = @import("space.zig");
+const iterspace = @import("iterspace.zig");
 
 const M = 1024;
 const N = 1024;
 const P = 512;
 
-const A = buffer.LazyBuffer([M][P]f32);
-const B = buffer.LazyBuffer([P][N]f32);
-const C = buffer.LazyBuffer([M][N]f32);
+const A = [M][P]f32;
+const B = [P][N]f32;
+const C = [M][N]f32;
 
 const In = struct {
-    a: buffer.AllocatedBuffer(A.Arr),
-    b: buffer.AllocatedBuffer(B.Arr),
+    a: buffer.AllocatedBuffer(A),
+    b: buffer.AllocatedBuffer(B),
 };
 
-const Out = struct {
+const InOut = struct {
     c: buffer.AllocatedBuffer(C.Arr),
 };
 
-const matmul_logic: loop.Logic(In, Out) = struct {
+const matmul_logic: loop.Logic(In, InOut, 3) = struct {
     inline fn logic(
         a: buffer.AllocatedBuffer(A.Arr),
         b: buffer.AllocatedBuffer(B.Arr),
