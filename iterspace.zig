@@ -26,6 +26,7 @@ pub fn IterationSpace(comptime Array: type) type {
 
         idx_ndims: u8,
         block_info: *const [ndims]utils.BlockInfo = &default_block_info,
+        unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
         vector: bool = (ThisUnit == Vec),
 
         pub fn init() Self {
@@ -73,6 +74,7 @@ pub fn IterationSpace(comptime Array: type) type {
             return .{
                 .idx_ndims = b.idx_ndims,
                 .block_info = b.block_info[0..dim] ++ .{ block_info1, block_info2 } ++ b.block_info[dim + 1 .. ndims],
+                .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
             };
         }
 
@@ -83,7 +85,37 @@ pub fn IterationSpace(comptime Array: type) type {
         // the following function is removed from the namespace of this type
         const NonVectorized = if (ThisVectorized != void) Self else void;
         pub fn vectorize(b: *const NonVectorized) IterationSpace(ThisVectorized) {
-            return .{ .block_info = b.block_info, .idx_ndims = b.idx_ndims };
+            return .{
+                .block_info = b.block_info,
+                .idx_ndims = b.idx_ndims,
+                .unrolled_dims = b.unrolled_dims,
+            };
+        }
+
+        pub fn unroll(comptime b: *const Self, comptime dim: u8) Self {
+            const new_unrolled_dims: *const [ndims]bool = &comptime blk: {
+                var orig_unrolled_dims = b.unrolled_dims.*;
+                std.debug.assert(!orig_unrolled_dims[dim]);
+                orig_unrolled_dims[dim] = true;
+                break :blk orig_unrolled_dims;
+            };
+            return .{
+                .block_info = b.block_info,
+                .idx_ndims = b.idx_ndims,
+                .unrolled_dims = new_unrolled_dims,
+            };
+        }
+
+        fn Reorder(comptime new_order: [ndims]u8) type {
+            const new_shape = utils.arrayPermute(usize, ndims, shape, new_order);
+            return IterationSpace(utils.ShapeToArray(dtype, ndims, &new_shape));
+        }
+        pub fn reorder(comptime b: *const Self, comptime new_order: [ndims]u8) Reorder(new_order) {
+            return .{
+                .block_info = &comptime utils.arrayPermute(utils.BlockInfo, ndims, b.block_info.*, new_order),
+                .idx_ndims = b.idx_ndims,
+                .unrolled_dims = &comptime utils.arrayPermute(bool, ndims, b.unrolled_dims.*, new_order),
+            };
         }
 
         pub fn nest(

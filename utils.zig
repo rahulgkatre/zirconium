@@ -90,3 +90,22 @@ pub const Layout = struct {
     strides: []const usize,
     offest: usize = 0,
 };
+
+pub fn arrayPermute(comptime T: type, comptime len: u8, array: [len]T, comptime perm: [len]u8) [len]T {
+    var used: [len]bool = [_]bool{false} ** len;
+    for (perm) |p| {
+        if (p < len and !used[p]) {
+            used[p] = true;
+        } else {
+            @compileError(std.fmt.comptimePrint("Invalid permutation {any}", .{perm}));
+        }
+    }
+    for (used) |u| {
+        if (!u) @compileError("Not all dims in permutation were used");
+    }
+    var new_array: [len]T = undefined;
+    for (0..len) |dim| {
+        new_array[dim] = array[perm[dim]];
+    }
+    return new_array;
+}

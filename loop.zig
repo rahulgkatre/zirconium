@@ -38,16 +38,20 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
                 inline for (loop.body) |item| {
                     switch (item) {
                         inline else => |inner| if (comptime loop.unrolled) {
-                            inline while (loopvar < loop.upper) : (loopvar += loop.step_size) {
+                            // this method could also be used to
+                            comptime std.debug.assert(@mod(loop.upper - loop.lower, loop.step_size) == 0);
+                            inline for (0..comptime @divFloor(loop.upper - loop.lower, loop.step_size)) |_| {
                                 idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
                                 inner.eval(in, inout, idx);
                                 idx[loop.block_info.orig_dim] = base_for_dim;
+                                loopvar += loop.step_size;
                             }
                         } else {
-                            while (loopvar < loop.upper) : (loopvar += loop.step_size) {
+                            for (0..comptime @divFloor(loop.upper - loop.lower, loop.step_size)) |_| {
                                 idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
                                 inner.eval(in, inout, idx);
                                 idx[loop.block_info.orig_dim] = base_for_dim;
+                                loopvar += loop.step_size;
                             }
                         },
                     }
@@ -68,6 +72,7 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
                 .body = body,
                 .block_info = iter_space.block_info[dim],
                 .vector = vector,
+                .unrolled = iter_space.unrolled_dims[dim],
                 .step_size = if (vector) IterSpace.shape[IterSpace.ndims - 1] else 1,
             };
         }
@@ -112,12 +117,9 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
             };
         }
 
-        pub fn evalFn(
-            comptime nest: *const @This(),
-            // comptime iter_logic: func.IterationLogic(In, InOut, nest.idx_ndims),
-        ) fn (anytype, anytype) callconv(.Inline) void {
+        pub fn evalFn(comptime nest: *const @This()) fn (anytype, anytype) void {
             return comptime struct {
-                inline fn eval(
+                fn eval(
                     in: anytype,
                     inout: anytype,
                 ) void {
@@ -137,6 +139,11 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
             const eval_fn = comptime nest.evalFn();
             eval_fn(in, inout);
         }
+
+        // fuse will need to fuse the args of two different nests
+        // to build a new type and appropriately pass in the args into the functions
+        // which require the originally defined arg types, this will be tricky!
+        // pub fn fuse() {}
     };
 }
 
@@ -147,16 +154,15 @@ const Args = struct {
 };
 
 const test_logic: func.IterationLogic(void, Args, 2) = struct {
-    // Idea: using callconv() require a GPU kernel here, or inline this function
-    // into a surrounding GPU kernel. Unraveling method would require to be bound to GPU
-    // thread / group ids
+    // for gpu execution inline this function into a surrounding GPU kernel.
+    // Unraveling method would require to be bound to GPU thread / group ids
     inline fn iter_logic(b: *AllocatedBuffer(B), idx: [2]usize) void {
         std.testing.expectEqual(b.constant(false), b.load(idx)) catch unreachable;
         b.store(b.constant(true), idx);
     }
 }.iter_logic;
 
-test "simple_nest" {
+test "nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -177,6 +183,46 @@ test "simple_nest" {
                         .orig_dim = 1,
                         .block_size = 1,
                     },
+                    .body = &.{
+                        .{
+                            .iter_logic = nest.body[0].body[0].loop.body[0].iter_logic,
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(.{}, .{&b});
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+}
+
+test "unroll_nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const us = comptime s.unroll(1);
+    const nest = us.nest(void, Args, test_logic);
+    const expected = comptime Nest(void, Args, 2).Loop{
+        .upper = 16,
+        .block_info = .{
+            .num_blocks = 16,
+            .orig_dim = 0,
+            .block_size = 1,
+        },
+        .body = &.{
+            .{
+                .loop = .{
+                    .upper = 8,
+                    .block_info = .{
+                        .num_blocks = 8,
+                        .orig_dim = 1,
+                        .block_size = 1,
+                    },
+                    .unrolled = true,
                     .body = &.{
                         .{
                             .iter_logic = nest.body[0].body[0].loop.body[0].iter_logic,
@@ -218,6 +264,45 @@ test "vector_nest" {
                         .num_blocks = 8,
                         .orig_dim = 1,
                         .block_size = 1,
+                    },
+                    .body = &.{
+                        .{
+                            .iter_logic = nest.body[0].body[0].loop.body[0].iter_logic,
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
+
+    var b = try AllocatedBuffer(B).alloc(arena.allocator());
+    nest.eval(.{}, .{&b});
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+}
+
+test "reorder_nest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const rs = comptime s.reorder(.{ 1, 0 });
+    const nest = comptime rs.nest(void, Args, test_logic);
+    const expected = comptime Nest(void, Args, 2).Loop{
+        .upper = 8,
+        .block_info = .{
+            .num_blocks = 8,
+            .orig_dim = 1,
+            .block_size = 1,
+        },
+        .body = &.{
+            .{
+                .loop = .{
+                    .upper = 16,
+                    .block_info = .{
+                        .block_size = 1,
+                        .num_blocks = 16,
+                        .orig_dim = 0,
                     },
                     .body = &.{
                         .{
