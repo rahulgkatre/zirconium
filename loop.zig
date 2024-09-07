@@ -9,7 +9,7 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
     return struct {
         const CurrentNest = @This();
         const IterLogicWrapper = struct {
-            eval: fn (anytype, anytype, [idx_ndims]usize, []std.Thread) callconv(.Inline) void,
+            eval: fn (anytype, anytype, [idx_ndims]usize) callconv(.Inline) void,
         };
 
         // common interface here is that both have an eval() function
@@ -27,42 +27,48 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
 
             body: []const LoopBodyItem = &.{},
 
-            inline fn eval(comptime loop: *const Loop, in: anytype, inout: anytype, base_idx: [idx_ndims]usize, cpu_threads: []std.Thread) void {
+            inline fn eval(
+                comptime loop: *const Loop,
+                in: anytype,
+                inout: anytype,
+                base_idx: [idx_ndims]usize,
+            ) void {
                 var idx = base_idx;
                 const base_for_dim = base_idx[loop.block_info.orig_dim];
                 var loopvar = loop.lower;
+                const n_steps = comptime @divFloor(loop.upper - loop.lower, loop.step_size);
+                var threads: [n_steps]std.Thread = undefined;
 
                 inline for (loop.body) |item| {
                     switch (item) {
                         inline else => |inner| {
                             if (comptime loop.unrolled) {
-                                // this method could also be used to
                                 comptime std.debug.assert(@mod(loop.upper - loop.lower, loop.step_size) == 0);
-                                inline for (0..comptime @divFloor(loop.upper - loop.lower, loop.step_size)) |i| {
+                                inline for (0..n_steps) |i| {
                                     idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
                                     if (comptime loop.cpu_parallel) {
-                                        cpu_threads[@mod(i, cpu_threads.len)] = std.Thread.spawn(.{}, inner.eval, .{ in, inout, idx, cpu_threads }) catch unreachable;
+                                        threads[i] = std.Thread.spawn(.{}, inner.eval, .{ in, inout, idx }) catch unreachable;
                                     } else {
-                                        inner.eval(in, inout, idx, cpu_threads);
+                                        inner.eval(in, inout, idx);
                                     }
                                     idx[loop.block_info.orig_dim] = base_for_dim;
                                     loopvar += loop.step_size;
                                 }
                             } else {
-                                for (0..comptime @divFloor(loop.upper - loop.lower, loop.step_size)) |i| {
+                                for (0..@divFloor(loop.upper - loop.lower, loop.step_size)) |i| {
                                     idx[loop.block_info.orig_dim] += loop.block_info.block_size * loopvar;
                                     if (comptime loop.cpu_parallel) {
-                                        cpu_threads[@mod(i, cpu_threads.len)] = std.Thread.spawn(.{}, inner.eval, .{ in, inout, idx, cpu_threads }) catch unreachable;
+                                        threads[i] = std.Thread.spawn(.{}, inner.eval, .{ in, inout, idx }) catch unreachable;
                                     } else {
-                                        inner.eval(in, inout, idx, cpu_threads);
+                                        inner.eval(in, inout, idx);
                                     }
                                     idx[loop.block_info.orig_dim] = base_for_dim;
                                     loopvar += loop.step_size;
                                 }
                             }
                             if (comptime loop.cpu_parallel) {
-                                for (cpu_threads) |thread| {
-                                    thread.join();
+                                inline for (threads) |t| {
+                                    t.join();
                                 }
                             }
                         },
@@ -78,19 +84,13 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
             comptime iter_space: anytype,
             comptime dim: u8,
             body: []const LoopBodyItem,
-            lower_override: ?usize,
-            upper_override: ?usize,
         ) Loop {
             const IterSpace: type = @TypeOf(iter_space.*);
             const vector = iter_space.vector and dim == IterSpace.ndims - 1;
 
-            if ((lower_override != null or upper_override != null) and iter_space.unrolled_dims[dim]) {
-                @panic("cannot specify runtime bounds for an unrolled loop");
-            }
-
             return .{
-                .lower = lower_override orelse 0,
-                .upper = upper_override orelse IterSpace.shape[dim],
+                .lower = 0,
+                .upper = IterSpace.shape[dim],
                 .body = body,
                 .block_info = iter_space.block_info[dim],
                 .vector = vector,
@@ -111,7 +111,7 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
 
             const iter_logic_wrapper: IterLogicWrapper = .{
                 .eval = struct {
-                    inline fn wrapped_iter_logic(in: anytype, inout: anytype, idx: [idx_ndims]usize, _: []std.Thread) void {
+                    inline fn wrapped_iter_logic(in: anytype, inout: anytype, idx: [idx_ndims]usize) void {
                         if (comptime iter_space.vector) {
                             const vec_len = IterSpace.shape[IterSpace.ndims - 1];
                             const VecLogic: type = func.VectorizedLogic(In, InOut, idx_ndims, vec_len);
@@ -134,8 +134,6 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
                                 iter_space,
                                 IterSpace.ndims - dim - 1,
                                 body,
-                                null,
-                                null,
                             ),
                         },
                     };
@@ -149,12 +147,12 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
             };
         }
 
-        pub fn evalFn(comptime nest: *const @This()) fn (anytype, anytype, []std.Thread) void {
+        pub fn evalFn(comptime nest: *const @This()) fn (anytype, anytype) void {
             return comptime struct {
-                fn eval(in: anytype, inout: anytype, cpu_threads: []std.Thread) void {
+                fn eval(in: anytype, inout: anytype) void {
                     const idx: [nest.idx_ndims]usize = .{0} ** nest.idx_ndims;
                     inline for (nest.body) |loop| {
-                        loop.eval(in, inout, idx, cpu_threads);
+                        loop.eval(in, inout, idx);
                     }
                 }
             }.eval;
@@ -164,11 +162,9 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
             comptime nest: *const @This(),
             in: anytype,
             inout: anytype,
-            comptime n_cpu_threads: usize,
         ) void {
-            var cpu_threads: [n_cpu_threads]std.Thread = .{undefined} ** n_cpu_threads;
             const eval_fn = comptime nest.evalFn();
-            eval_fn(in, inout, &cpu_threads);
+            eval_fn(in, inout);
         }
 
         // fuse will need to fuse the args of two different nests
@@ -228,7 +224,7 @@ test "nest" {
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
 
-    nest.eval(.{}, .{&b}, 0);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
 
@@ -268,7 +264,7 @@ test "unroll nest" {
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(.{}, .{&b}, 0);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
 
@@ -310,7 +306,7 @@ test "vector nest" {
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(.{}, .{&b}, 0);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
 
@@ -349,7 +345,7 @@ test "reorder nest" {
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(.{}, .{&b}, 0);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
 
@@ -388,7 +384,7 @@ test "parallel nest" {
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(.{}, .{&b}, 8);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
 
@@ -456,6 +452,6 @@ test "split split vector nest" {
     };
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
-    nest.eval(.{}, .{&b}, 0);
+    nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
 }
