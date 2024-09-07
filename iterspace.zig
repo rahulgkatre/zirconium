@@ -27,6 +27,7 @@ pub fn IterationSpace(comptime Array: type) type {
         idx_ndims: u8,
         block_info: *const [ndims]utils.BlockInfo = &default_block_info,
         unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
+        parallel_dims: *const [ndims]bool = &(.{false} ** ndims),
         vector: bool = (ThisUnit == Vec),
 
         pub fn init() Self {
@@ -75,6 +76,7 @@ pub fn IterationSpace(comptime Array: type) type {
                 .idx_ndims = b.idx_ndims,
                 .block_info = b.block_info[0..dim] ++ .{ block_info1, block_info2 } ++ b.block_info[dim + 1 .. ndims],
                 .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
+                .parallel_dims = b.parallel_dims[0..dim] ++ .{false} ++ b.parallel_dims[dim..ndims],
             };
         }
 
@@ -89,6 +91,7 @@ pub fn IterationSpace(comptime Array: type) type {
                 .block_info = b.block_info,
                 .idx_ndims = b.idx_ndims,
                 .unrolled_dims = b.unrolled_dims,
+                .parallel_dims = b.parallel_dims,
             };
         }
 
@@ -103,6 +106,7 @@ pub fn IterationSpace(comptime Array: type) type {
                 .block_info = b.block_info,
                 .idx_ndims = b.idx_ndims,
                 .unrolled_dims = new_unrolled_dims,
+                .parallel_dims = b.parallel_dims,
             };
         }
 
@@ -115,6 +119,22 @@ pub fn IterationSpace(comptime Array: type) type {
                 .block_info = &comptime utils.arrayPermute(utils.BlockInfo, ndims, b.block_info.*, new_order),
                 .idx_ndims = b.idx_ndims,
                 .unrolled_dims = &comptime utils.arrayPermute(bool, ndims, b.unrolled_dims.*, new_order),
+                .parallel_dims = &comptime utils.arrayPermute(bool, ndims, b.parallel_dims.*, new_order),
+            };
+        }
+
+        pub fn parallel(comptime b: *const Self, comptime dim: u8) Self {
+            const new_parallel_dims: *const [ndims]bool = &comptime blk: {
+                var orig_parallel_dims = b.parallel_dims.*;
+                std.debug.assert(!orig_parallel_dims[dim]);
+                orig_parallel_dims[dim] = true;
+                break :blk orig_parallel_dims;
+            };
+            return .{
+                .block_info = b.block_info,
+                .idx_ndims = b.idx_ndims,
+                .unrolled_dims = b.unrolled_dims,
+                .parallel_dims = new_parallel_dims,
             };
         }
 
