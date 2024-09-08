@@ -6,6 +6,8 @@ This is done through the power of `comptime` in Zig, where loop parameters and t
 
 This library is to be interfaced with [Tesseract](https://github.com/rahulgkatre/tesseract) and be used as an intermediate representation for compiling tensor graphs. 
 
+Check out `demo.zig` to see how it works. 
+
 ## Core Principles
 
 ### Verification During Compilation
