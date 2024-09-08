@@ -50,8 +50,8 @@ pub fn IterationSpace(comptime Array: type) type {
 
             const num_blocks = @divExact(shape[dim], block_size);
 
-            const pre = if (dim > 0) shape[0..dim] else .{};
-            const post = if (dim < ndims - 1) shape[dim + 1 .. ndims] else .{};
+            const pre = shape[0..dim];
+            const post = shape[dim + 1 .. ndims];
             return IterationSpace(utils.ShapeToArray(dtype, ndims + 1, pre ++ .{ num_blocks, block_size } ++ post));
         }
 
@@ -78,6 +78,78 @@ pub fn IterationSpace(comptime Array: type) type {
                 .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
                 .parallel_dims = b.parallel_dims[0..dim] ++ .{false} ++ b.parallel_dims[dim..ndims],
             };
+        }
+
+        fn TileHelper(comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) type {
+            const dim, const block_size = sorted_tile_config[0];
+            if (sorted_tile_config.len == 1) {
+                return Split(dim + dim_offset, block_size);
+            } else {
+                return Split(dim + dim_offset, block_size)
+                    .TileHelper(dim_offset + 1, sorted_tile_config[1..]);
+            }
+        }
+
+        fn tileHelper(comptime b: *const Self, comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) TileHelper(dim_offset, sorted_tile_config) {
+            const dim, const block_size = sorted_tile_config[0];
+            if (sorted_tile_config.len == 1) {
+                // dim offset is needed because as we process each split, a new dim is added.
+                // TODO: sort tile_config by dim before processing it
+                return b.split(dim + dim_offset, block_size);
+            } else {
+                return b.split(dim, block_size)
+                    .tileHelper(dim_offset + 1, sorted_tile_config[1..]);
+            }
+        }
+
+        fn tileReorder(comptime tile_ndims: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) []const u8 {
+            var new_order: [tile_ndims]u8 = undefined;
+            var added_dims: [tile_ndims]bool = .{false} ** tile_ndims;
+
+            for (sorted_tile_config, 0..) |tile_cfg, count| {
+                const orig_dim, _ = tile_cfg;
+                const new_dim = orig_dim + count;
+                new_order[count + sorted_tile_config[0][0]] = new_dim;
+                added_dims[new_dim] = true;
+            }
+
+            const inner_dims_offset = sorted_tile_config[0][0] + sorted_tile_config.len;
+            var inner_dims_idx = 0;
+            for (added_dims, 0..) |is_added, dim| {
+                if (!is_added) {
+                    if (dim < sorted_tile_config[0][0]) {
+                        new_order[dim] = dim;
+                    } else {
+                        new_order[inner_dims_idx + inner_dims_offset] = dim;
+                        inner_dims_idx += 1;
+                    }
+                }
+            }
+
+            return &new_order;
+        }
+
+        fn Tile(comptime tile_config: []const std.meta.Tuple(&.{ u8, usize })) type {
+            var sorted_tile_config = tile_config[0..tile_config.len].*;
+            std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tile_config, {}, struct {
+                fn lessThan(_: void, lhs: std.meta.Tuple(&.{ u8, usize }), rhs: std.meta.Tuple(&.{ u8, usize })) bool {
+                    return lhs[0] < rhs[0];
+                }
+            }.lessThan);
+            const Tiled = TileHelper(0, &sorted_tile_config);
+            return Tiled.Reorder(tileReorder(Tiled.ndims, &sorted_tile_config)[0..Tiled.ndims].*);
+        }
+
+        pub fn tile(comptime b: *const Self, comptime tile_config: []const std.meta.Tuple(&.{ u8, usize })) Tile(tile_config) {
+            // tile helper creates the extra splits, but it still needs to be reordered
+            var sorted_tile_config = tile_config[0..tile_config.len].*;
+            std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tile_config, {}, struct {
+                fn lessThan(_: void, lhs: std.meta.Tuple(&.{ u8, usize }), rhs: std.meta.Tuple(&.{ u8, usize })) bool {
+                    return lhs[0] < rhs[0];
+                }
+            }.lessThan);
+            const tile_ndims = Tile(tile_config).ndims;
+            return b.tileHelper(0, &sorted_tile_config).reorder(tileReorder(tile_ndims, &sorted_tile_config)[0..tile_ndims].*);
         }
 
         pub const Vec: type = @Vector(shape[ndims - 1], dtype);
@@ -157,6 +229,13 @@ test "init" {
 
     try std.testing.expect(@intFromPtr(&d.multi[0]) == @intFromPtr(&d.raw[0]));
     try std.testing.expect(@intFromPtr(&d.multi[1][7]) == @intFromPtr(&d.raw[15]));
+}
+
+test "tile" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tiled = comptime IterationSpace([32][16][8]f32).init().tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
+    try std.testing.expectEqual(@TypeOf(tiled), IterationSpace([32][2][2][8][4]f32));
 }
 
 test "split" {
