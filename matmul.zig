@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// My attempts at writing some GEMM code
+/// This is here to show what loop nest optimized code would look like without Zirconium
+const _ = @This();
+
 const CACHE_LINE = std.atomic.cache_line;
 const SIMD_WIDTH = 128; // std.simd.suggestVectorLength(f32) orelse 8;
 const MATRIX_SIZE = 1024;

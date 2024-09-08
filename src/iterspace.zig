@@ -36,7 +36,7 @@ pub fn IterationSpace(comptime Array: type) type {
             };
         }
 
-        fn Split(comptime dim: u8, comptime block_size: u8) type {
+        fn Split(comptime dim: u8, comptime block_size: usize) type {
             std.debug.assert(dim < ndims);
             // TODO: Support splits that don't divide evenly
             // Give the option of how to evaluate the uneven part
@@ -55,7 +55,7 @@ pub fn IterationSpace(comptime Array: type) type {
             return IterationSpace(utils.ShapeToArray(dtype, ndims + 1, pre ++ .{ num_blocks, block_size } ++ post));
         }
 
-        pub fn split(comptime b: *const Self, comptime dim: u8, comptime block_size: u8) Split(dim, block_size) {
+        pub fn split(comptime b: *const Self, comptime dim: u8, comptime block_size: usize) Split(dim, block_size) {
             if (Split(dim, block_size) == Self) {
                 return b.*;
             }
@@ -82,24 +82,22 @@ pub fn IterationSpace(comptime Array: type) type {
 
         fn TileHelper(comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) type {
             const dim, const block_size = sorted_tile_config[0];
-            if (sorted_tile_config.len == 1) {
-                return Split(dim + dim_offset, block_size);
-            } else {
+            if (sorted_tile_config.len > 1) {
                 return Split(dim + dim_offset, block_size)
                     .TileHelper(dim_offset + 1, sorted_tile_config[1..]);
             }
+            return Split(dim + dim_offset, block_size);
         }
 
         fn tileHelper(comptime b: *const Self, comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) TileHelper(dim_offset, sorted_tile_config) {
             const dim, const block_size = sorted_tile_config[0];
-            if (sorted_tile_config.len == 1) {
+            if (sorted_tile_config.len > 1) {
                 // dim offset is needed because as we process each split, a new dim is added.
                 // TODO: sort tile_config by dim before processing it
-                return b.split(dim + dim_offset, block_size);
-            } else {
                 return b.split(dim, block_size)
                     .tileHelper(dim_offset + 1, sorted_tile_config[1..]);
             }
+            return b.split(dim + dim_offset, block_size);
         }
 
         fn tileReorder(comptime tile_ndims: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) []const u8 {
