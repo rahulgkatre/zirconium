@@ -10,40 +10,24 @@ fn validateArgsType(comptime Type: type) void {
     }
 }
 
-pub fn externFnParams(comptime In: type, comptime InOut: type) []std.builtin.Type.Fn.Param {
-    if (In != void) validateArgsType(In);
-    if (InOut != void) validateArgsType(InOut);
+pub fn externFnParams(comptime ArgsTuple: type) []std.builtin.Type.Fn.Param {
+    if (ArgsTuple != void) validateArgsType(ArgsTuple);
 
-    const nparams = (if (In != void) @typeInfo(In).Struct.fields.len else 0) + (if (InOut != void) @typeInfo(InOut).Struct.fields.len else 0);
+    const nparams = (if (ArgsTuple != void) @typeInfo(ArgsTuple).Struct.fields.len else 0);
     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
     var i = 0;
     // var fields: [nparams]std.builtin.Type.StructField = undefined;
-    if (In != void) {
-        for (@typeInfo(In).Struct.fields) |field| {
+    if (ArgsTuple != void) {
+        for (@typeInfo(ArgsTuple).Struct.fields) |field| {
             const Type = AllocatedBuffer(field.type);
             // const alignment: usize = Type.alignment;
             // fields[i] = std.builtin.Type.StructField{
             //     .alignment = alignment,
-            //     .type = std.meta.FieldType(Type, .raw),
+            //     .type = std.meta.FieldType(Type, .data),
             //     .name = field.name,
             // };
             params[i] = std.builtin.Type.Fn.Param{
-                .type = std.meta.FieldType(Type, .raw),
-            };
-            i += 1;
-        }
-    }
-    if (InOut != void) {
-        for (@typeInfo(In).Struct.fields) |field| {
-            const Type = AllocatedBuffer(field.type);
-            // const alignment: usize = Type.alignment;
-            // fields[i] = std.builtin.Type.StructField{
-            //     .alignment = alignment,
-            //     .type = std.meta.FieldType(Type, .raw),
-            //     .name = field.name,
-            // };
-            params[i] = std.builtin.Type.Fn.Param{
-                .type = std.meta.FieldType(Type, .raw),
+                .type = std.meta.FieldType(Type, .data),
             };
             i += 1;
         }

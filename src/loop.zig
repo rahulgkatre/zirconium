@@ -225,7 +225,7 @@ test "nest" {
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
 
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
 test "unroll nest" {
@@ -265,7 +265,7 @@ test "unroll nest" {
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
 test "vector nest" {
@@ -307,7 +307,7 @@ test "vector nest" {
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
 test "reorder nest" {
@@ -346,7 +346,7 @@ test "reorder nest" {
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
 test "parallel nest" {
@@ -385,7 +385,7 @@ test "parallel nest" {
 
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
 test "split split vector nest" {
@@ -453,5 +453,5 @@ test "split split vector nest" {
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
     var b = try AllocatedBuffer(B).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
-    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.raw[0..128]);
+    try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }

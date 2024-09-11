@@ -14,8 +14,7 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
         pub const alignment = @max(SIMD_ALIGN, CACHE_LINE);
 
         layout: utils.Layout,
-        multi: *Array align(alignment),
-        raw: [*]dtype align(alignment),
+        data: [*]dtype align(alignment),
 
         pub const dtype = utils.Datatype(Array);
         const ndims = utils.extractNdims(Array);
@@ -64,8 +63,7 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
                     // .unrolled = &(.{false} ** ndims),
                     // .parallelized = &(.{false} ** ndims),
                 },
-                .multi = @alignCast(@ptrCast(slice)),
-                .raw = @alignCast(@ptrCast(slice)),
+                .data = @alignCast(@ptrCast(slice)),
             };
         }
 
@@ -98,21 +96,30 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
         pub inline fn load(b: Self, idx: [ndims]usize) Unit {
             if (Unit == Vec) {
                 const len = @typeInfo(Vec).Vector.len;
-                const val: *const Unit align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..len]));
+                const val: *const Unit align(alignment) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
                 return val.*;
             } else {
-                return b.raw[b.unravel(idx)];
+                return b.data[b.unravel(idx)];
             }
         }
 
         pub inline fn store(b: Self, val: Unit, idx: [ndims]usize) void {
             if (Unit == Vec) {
                 const len = @typeInfo(Vec).Vector.len;
-                const dst: *[len]dtype align(alignment) = @alignCast(@ptrCast(b.raw[b.unravel(idx)..][0..len]));
+                const dst: *[len]dtype align(alignment) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
                 dst.* = val;
             } else {
-                b.raw[b.unravel(idx)] = val;
+                b.data[b.unravel(idx)] = val;
             }
         }
     };
+}
+
+test "init" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var d = try AllocatedBuffer([16][8]f32).alloc(arena.allocator());
+    defer arena.deinit();
+
+    try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[0][0]) == @intFromPtr(&d.data[0]));
+    try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[1][7]) == @intFromPtr(&d.data[15]));
 }

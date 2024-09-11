@@ -219,16 +219,6 @@ pub fn IterationSpace(comptime Array: type) type {
     };
 }
 
-test "init" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const t = comptime IterationSpace([16][8]f32).init();
-    var d = try AllocatedBuffer(@TypeOf(t).Arr).alloc(arena.allocator());
-    defer arena.deinit();
-
-    try std.testing.expect(@intFromPtr(&d.multi[0]) == @intFromPtr(&d.raw[0]));
-    try std.testing.expect(@intFromPtr(&d.multi[1][7]) == @intFromPtr(&d.raw[15]));
-}
-
 test "tile" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

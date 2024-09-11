@@ -72,8 +72,8 @@ pub fn blocked_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
 pub fn transposed_blocked_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
-    var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    var b_t: Matrix = @ptrCast(&b_t_raw);
+    var b_t_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var b_t: Matrix = @ptrCast(&b_t_data);
     for (0..MATRIX_SIZE) |i| {
         for (0..MATRIX_SIZE) |j| {
             b_t[i][j] = b[j][i];
@@ -100,8 +100,8 @@ pub fn transposed_blocked_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
 pub fn transposed_blocked_simd_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
-    var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    var b_t: Matrix = @ptrCast(&b_t_raw);
+    var b_t_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var b_t: Matrix = @ptrCast(&b_t_data);
     for (0..MATRIX_SIZE) |i| {
         for (0..MATRIX_SIZE) |j| {
             b_t[i][j] = b[j][i];
@@ -132,8 +132,8 @@ pub fn transposed_blocked_simd_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
 pub fn transposed_blocked_local_simd_gemm(a: InMatrix, b: InMatrix, c: Matrix) void {
     @memset(@as(*[MATRIX_SIZE * MATRIX_SIZE]f32, @ptrCast(c)), 0.0);
 
-    var b_t_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    var b_t: Matrix = @ptrCast(&b_t_raw);
+    var b_t_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var b_t: Matrix = @ptrCast(&b_t_data);
     for (0..MATRIX_SIZE) |i| {
         for (0..MATRIX_SIZE) |j| {
             b_t[i][j] = b[j][i];
@@ -338,18 +338,18 @@ pub fn main() !void {
 
     // const gemm_mp_x_np = @import("gemm2.zig").gemm_mp_x_np;
 
-    var a_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    var b_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    var c_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
-    // var expected_raw: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var a_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var b_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    var c_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
+    // var expected_data: [MATRIX_SIZE * MATRIX_SIZE]f32 align(ALIGN) = undefined;
 
-    const a: Matrix = @ptrCast(&a_raw);
-    const b: Matrix = @ptrCast(&b_raw);
-    const c: Matrix = @ptrCast(&c_raw);
-    // const expected: Matrix = @ptrCast(&expected_raw);
+    const a: Matrix = @ptrCast(&a_data);
+    const b: Matrix = @ptrCast(&b_data);
+    const c: Matrix = @ptrCast(&c_data);
+    // const expected: Matrix = @ptrCast(&expected_data);
 
-    init(&a_raw);
-    init(&b_raw);
+    init(&a_data);
+    init(&b_data);
 
     std.debug.print("starting benchmark run...\n", .{});
 
@@ -366,8 +366,8 @@ pub fn main() !void {
     // blocked_local_blocked_simd_fma_gemm(a, b, expected);
     // var total_error: f32 = 0.0;
     // for (0..MATRIX_SIZE * MATRIX_SIZE) |i| {
-    // try std.testing.expectApproxEqAbs(expected_raw[i], c_raw[i], 0.001);
-    // total_error += @abs(expected_raw[i] - c_raw[i]);
+    // try std.testing.expectApproxEqAbs(expected_data[i], c_data[i], 0.001);
+    // total_error += @abs(expected_data[i] - c_data[i]);
     // }
     // std.debug.print("total error {}\n", .{total_error});
     // std.debug.print("results are valid!\n", .{});
