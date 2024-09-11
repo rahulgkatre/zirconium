@@ -171,13 +171,13 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
     };
 }
 
-const s = IterationSpace([16][8]bool).init();
+const s = IterationSpace([16][8]bool).init(.{ "i", "j" });
 const B = [16][8]bool;
 const TestArgs = struct {
     b: B,
 };
 
-const TestIndices: type = s.Indices(.{ "i", "j" });
+const TestIndices: type = s.Indices();
 
 const test_logic: func.Logic(TestArgs, TestIndices) = struct {
     // for gpu execution inline this function into a surrounding GPU kernel.
@@ -192,7 +192,7 @@ test "nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const nest = s.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = s.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, s).Loop{
         .upper = 16,
         .block_info = .{
@@ -232,7 +232,7 @@ test "unroll nest" {
     defer arena.deinit();
 
     const us = comptime s.unroll(1);
-    const nest = us.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = us.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, us).Loop{
         .upper = 16,
         .block_info = .{
@@ -273,7 +273,7 @@ test "vector nest" {
 
     const vs = comptime s.vectorize();
     try std.testing.expect(@TypeOf(vs).Vec == @Vector(8, bool));
-    const nest = comptime vs.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = comptime vs.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, vs).Loop{
         .upper = 16,
         .block_info = .{
@@ -314,7 +314,7 @@ test "reorder nest" {
     defer arena.deinit();
 
     const rs = comptime s.reorder(.{ 1, 0 });
-    const nest = comptime rs.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = comptime rs.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, rs).Loop{
         .upper = 8,
         .block_info = .{
@@ -353,7 +353,7 @@ test "parallel nest" {
     defer arena.deinit();
 
     const ps = comptime s.parallel(1);
-    const nest = comptime ps.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = comptime ps.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, ps).Loop{
         .upper = 16,
         .block_info = .{
@@ -398,7 +398,7 @@ test "split split vector nest" {
         .vectorize();
     try comptime std.testing.expectEqual(@TypeOf(ssv), IterationSpace([4][4][2]@Vector(4, bool)));
 
-    const nest = comptime ssv.nest(TestArgs, .{ "i", "j" }, test_logic);
+    const nest = comptime ssv.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, ssv).Loop{
         .upper = 4,
         .block_info = .{
