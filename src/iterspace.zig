@@ -24,6 +24,8 @@ pub fn IterationSpace(comptime Array: type) type {
             break :blk splits;
         };
 
+        iter_ndims: u8 = ndims,
+        iter_shape: [ndims]usize = shape,
         idx_ndims: u8,
         block_info: *const [ndims]utils.BlockInfo = &default_block_info,
         unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
@@ -34,6 +36,21 @@ pub fn IterationSpace(comptime Array: type) type {
             return .{
                 .idx_ndims = ndims,
             };
+        }
+
+        pub fn Indices(comptime self: Self, comptime names: [self.idx_ndims][:0]const u8) type {
+            const idx_ndims = self.idx_ndims;
+            var fields: [idx_ndims]std.builtin.Type.EnumField = undefined;
+            for (names, 0..) |name, i| {
+                fields[i].name = name;
+                fields[i].value = @intCast(i);
+            }
+            return @Type(std.builtin.Type{ .Enum = .{
+                .decls = &.{},
+                .fields = &fields,
+                .is_exhaustive = true,
+                .tag_type = u8,
+            } });
         }
 
         fn Split(comptime dim: u8, comptime block_size: usize) type {
@@ -209,11 +226,12 @@ pub fn IterationSpace(comptime Array: type) type {
         }
 
         pub fn nest(
-            comptime self: *const Self,
+            comptime self: Self,
             comptime Args: type,
-            comptime iter_logic: func.IterationLogic(Args, self.idx_ndims),
-        ) loop.Nest(Args, self.idx_ndims) {
-            return loop.Nest(Args, self.idx_ndims).init(self, iter_logic);
+            comptime idx_names: [self.idx_ndims][:0]const u8,
+            comptime iter_logic: func.Logic(Args, Indices(self, idx_names)),
+        ) loop.Nest(Args, self) {
+            return loop.Nest(Args, self).init(Indices(self, idx_names), iter_logic);
         }
     };
 }

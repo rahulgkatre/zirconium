@@ -2,15 +2,19 @@ const std = @import("std");
 const loop = @import("loop.zig");
 const utils = @import("utils.zig");
 
-pub fn Buffer(comptime Array: type) type {
-    return TiledBuffer(Array, void);
+pub fn Buffer(comptime Array: type, comptime Indices: type) type {
+    return TiledBuffer(Array, Indices, void);
 }
 
-pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
+pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: type) type {
     switch (@typeInfo(Tile)) {
         .Vector, .Array, .Void => {},
         else => @compileError("Unsupported tile type: " ++ @typeName(Tile)),
     }
+    const nindices: u8 = switch (@typeInfo(Indices)) {
+        .Enum => |info| @intCast(info.fields.len),
+        else => @compileError("Indices type must be enum, received " ++ @typeName(Indices)),
+    };
 
     return struct {
         const Self = @This();
@@ -27,7 +31,7 @@ pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
         /// Vectorized contiguous dim of the buffer.
         pub const Arr: type = Array;
 
-        const Unit = if (Tile != void) Tile else dtype;
+        pub const Unit = if (Tile != void) Tile else dtype;
 
         const numel: ?comptime_int = blk: {
             var n = 1;
@@ -57,8 +61,8 @@ pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
             break :blk strides;
         };
 
-        pub fn init(slice: []align(alignment) dtype) Buffer(Arr) {
-            return Buffer(Arr){
+        pub fn init(slice: []align(alignment) dtype) Buffer(Arr, Indices) {
+            return Buffer(Arr, Indices){
                 .layout = .{
                     .ndims = ndims,
                     .shape = &shape,
@@ -71,7 +75,7 @@ pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
             };
         }
 
-        pub fn alloc(allocator: std.mem.Allocator) !Buffer(Arr) {
+        pub fn alloc(allocator: std.mem.Allocator) !Buffer(Arr, Indices) {
             const slice: []align(alignment) dtype = try allocator.alignedAlloc(dtype, alignment, numel.?);
             if (dtype == bool) {
                 @memset(slice, false);
@@ -97,32 +101,49 @@ pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
             return i;
         }
 
-        pub inline fn load(b: Self, idx: [ndims]usize) Unit {
+        pub inline fn load(
+            b: Self,
+            comptime indices: [ndims]Indices,
+            idx: [nindices]usize,
+        ) Unit {
+            var selected: [ndims]usize = undefined;
+            inline for (indices, 0..) |ind, d| {
+                selected[d] = idx[@intFromEnum(ind)];
+            }
             switch (@typeInfo(Tile)) {
                 .Vector => |info| {
                     const len = info.len;
-                    const val: *const Unit align(TILE_ALIGN) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
+                    const val: *const Unit = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
                     return val.*;
                 },
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
                 },
-                .Void => return b.data[b.unravel(idx)],
+                .Void => return b.data[b.unravel(selected)],
                 else => unreachable,
             }
         }
 
-        pub inline fn store(b: Self, val: Unit, idx: [ndims]usize) void {
+        pub inline fn store(
+            b: Self,
+            comptime indices: [ndims]Indices,
+            val: Unit,
+            idx: [nindices]usize,
+        ) void {
+            var selected: [ndims]usize = undefined;
+            inline for (indices, 0..) |ind, d| {
+                selected[d] = idx[@intFromEnum(ind)];
+            }
             switch (@typeInfo(Tile)) {
                 .Vector => |info| {
                     const len = info.len;
-                    const dst: *[len]dtype align(TILE_ALIGN) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
+                    const dst: *[len]dtype = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
                     dst.* = val;
                 },
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
                 },
-                .Void => b.data[b.unravel(idx)] = val,
+                .Void => b.data[b.unravel(selected)] = val,
                 else => unreachable,
             }
         }
@@ -131,7 +152,7 @@ pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
 
 test "init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    var d = try Buffer([16][8]f32).alloc(arena.allocator());
+    var d = try Buffer([16][8]f32, enum {}).alloc(arena.allocator());
     defer arena.deinit();
 
     try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[0][0]) == @intFromPtr(&d.data[0]));

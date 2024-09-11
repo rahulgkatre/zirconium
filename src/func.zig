@@ -51,7 +51,8 @@ pub fn ExternFn(comptime Args: type) type {
     } });
 }
 
-pub fn IterationLogic(comptime Args: type, comptime idx_ndims: u8) type {
+pub fn Logic(comptime Args: type, comptime Indices: type) type {
+    const idx_ndims = @typeInfo(Indices).Enum.fields.len;
     if (Args != void) validateArgsType(Args);
 
     const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
@@ -60,7 +61,7 @@ pub fn IterationLogic(comptime Args: type, comptime idx_ndims: u8) type {
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type, Indices) };
             i += 1;
         }
     }
@@ -78,7 +79,8 @@ pub fn IterationLogic(comptime Args: type, comptime idx_ndims: u8) type {
     } });
 }
 
-pub fn VectorizedLogic(comptime Args: type, comptime idx_ndims: u8, comptime vec_len: usize) type {
+pub fn VectorizedLogic(comptime Args: type, comptime Indices: type, comptime vec_len: usize) type {
+    const idx_ndims = @typeInfo(Indices).Enum.fields.len;
     if (Args != void) validateArgsType(Args);
 
     const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
@@ -87,7 +89,7 @@ pub fn VectorizedLogic(comptime Args: type, comptime idx_ndims: u8, comptime vec
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, @Vector(vec_len, utils.Datatype(field.type))) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, Indices, @Vector(vec_len, utils.Datatype(field.type))) };
             i += 1;
         }
     }
