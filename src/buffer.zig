@@ -2,16 +2,21 @@ const std = @import("std");
 const loop = @import("loop.zig");
 const utils = @import("utils.zig");
 
-pub fn AllocatedBuffer(comptime Array: type) type {
-    return AllocatedVecBuffer(Array, null);
+pub fn Buffer(comptime Array: type) type {
+    return TiledBuffer(Array, void);
 }
 
-pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
+pub fn TiledBuffer(comptime Array: type, comptime Tile: type) type {
+    switch (@typeInfo(Tile)) {
+        .Vector, .Array, .Void => {},
+        else => @compileError("Unsupported tile type: " ++ @typeName(Tile)),
+    }
+
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
-        const SIMD_ALIGN = @alignOf(Vec);
-        pub const alignment = @max(SIMD_ALIGN, CACHE_LINE);
+        const TILE_ALIGN = @alignOf(Tile);
+        pub const alignment = @max(TILE_ALIGN, CACHE_LINE);
 
         layout: utils.Layout,
         data: [*]dtype align(alignment),
@@ -20,10 +25,9 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
         const ndims = utils.extractNdims(Array);
         const shape = utils.extractShape(Array);
         /// Vectorized contiguous dim of the buffer.
-        pub const Vec: type = if (vec_len) |len| @Vector(len, dtype) else void;
         pub const Arr: type = Array;
 
-        const Unit = if (Vec != void) Vec else dtype;
+        const Unit = if (Tile != void) Tile else dtype;
 
         const numel: ?comptime_int = blk: {
             var n = 1;
@@ -53,8 +57,8 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
             break :blk strides;
         };
 
-        pub fn init(slice: []align(alignment) dtype) AllocatedBuffer(Arr) {
-            return AllocatedBuffer(Arr){
+        pub fn init(slice: []align(alignment) dtype) Buffer(Arr) {
+            return Buffer(Arr){
                 .layout = .{
                     .ndims = ndims,
                     .shape = &shape,
@@ -67,7 +71,7 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
             };
         }
 
-        pub fn alloc(allocator: std.mem.Allocator) !AllocatedBuffer(Arr) {
+        pub fn alloc(allocator: std.mem.Allocator) !Buffer(Arr) {
             const slice: []align(alignment) dtype = try allocator.alignedAlloc(dtype, alignment, numel.?);
             if (dtype == bool) {
                 @memset(slice, false);
@@ -94,22 +98,32 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
         }
 
         pub inline fn load(b: Self, idx: [ndims]usize) Unit {
-            if (Unit == Vec) {
-                const len = @typeInfo(Vec).Vector.len;
-                const val: *const Unit align(alignment) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
-                return val.*;
-            } else {
-                return b.data[b.unravel(idx)];
+            switch (@typeInfo(Tile)) {
+                .Vector => |info| {
+                    const len = info.len;
+                    const val: *const Unit align(TILE_ALIGN) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
+                    return val.*;
+                },
+                .Array => |_| {
+                    @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
+                },
+                .Void => return b.data[b.unravel(idx)],
+                else => unreachable,
             }
         }
 
         pub inline fn store(b: Self, val: Unit, idx: [ndims]usize) void {
-            if (Unit == Vec) {
-                const len = @typeInfo(Vec).Vector.len;
-                const dst: *[len]dtype align(alignment) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
-                dst.* = val;
-            } else {
-                b.data[b.unravel(idx)] = val;
+            switch (@typeInfo(Tile)) {
+                .Vector => |info| {
+                    const len = info.len;
+                    const dst: *[len]dtype align(TILE_ALIGN) = @alignCast(@ptrCast(b.data[b.unravel(idx)..][0..len]));
+                    dst.* = val;
+                },
+                .Array => |_| {
+                    @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
+                },
+                .Void => b.data[b.unravel(idx)] = val,
+                else => unreachable,
             }
         }
     };
@@ -117,7 +131,7 @@ pub fn AllocatedVecBuffer(comptime Array: type, comptime vec_len: ?usize) type {
 
 test "init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    var d = try AllocatedBuffer([16][8]f32).alloc(arena.allocator());
+    var d = try Buffer([16][8]f32).alloc(arena.allocator());
     defer arena.deinit();
 
     try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[0][0]) == @intFromPtr(&d.data[0]));

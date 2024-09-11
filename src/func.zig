@@ -1,7 +1,7 @@
 const std = @import("std");
 const utils = @import("utils.zig");
-const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
-const AllocatedVecBuffer = @import("buffer.zig").AllocatedVecBuffer;
+const Buffer = @import("buffer.zig").Buffer;
+const TiledBuffer = @import("buffer.zig").TiledBuffer;
 
 fn validateArgsType(comptime Type: type) void {
     switch (@typeInfo(Type)) {
@@ -10,16 +10,16 @@ fn validateArgsType(comptime Type: type) void {
     }
 }
 
-pub fn externFnParams(comptime ArgsTuple: type) []std.builtin.Type.Fn.Param {
-    if (ArgsTuple != void) validateArgsType(ArgsTuple);
+pub fn externFnParams(comptime Args: type) []std.builtin.Type.Fn.Param {
+    if (Args != void) validateArgsType(Args);
 
-    const nparams = (if (ArgsTuple != void) @typeInfo(ArgsTuple).Struct.fields.len else 0);
+    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0);
     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
     var i = 0;
     // var fields: [nparams]std.builtin.Type.StructField = undefined;
-    if (ArgsTuple != void) {
-        for (@typeInfo(ArgsTuple).Struct.fields) |field| {
-            const Type = AllocatedBuffer(field.type);
+    if (Args != void) {
+        for (@typeInfo(Args).Struct.fields) |field| {
+            const Type = Buffer(field.type);
             // const alignment: usize = Type.alignment;
             // fields[i] = std.builtin.Type.StructField{
             //     .alignment = alignment,
@@ -41,33 +41,26 @@ pub fn externFnParams(comptime ArgsTuple: type) []std.builtin.Type.Fn.Param {
     return &params;
 }
 
-pub fn ExternFn(comptime In: type, comptime InOut: type) type {
+pub fn ExternFn(comptime Args: type) type {
     return @Type(.{ .Fn = .{
         .calling_convention = std.builtin.CallingConvention.C,
         .is_generic = false,
         .is_var_args = false,
-        .params = externFnParams(In, InOut),
+        .params = externFnParams(Args),
         .return_type = void,
     } });
 }
 
-pub fn IterationLogic(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) type {
-    if (In != void) validateArgsType(In);
-    if (InOut != void) validateArgsType(InOut);
+pub fn IterationLogic(comptime Args: type, comptime idx_ndims: u8) type {
+    if (Args != void) validateArgsType(Args);
 
-    const nparams = (if (In != void) @typeInfo(In).Struct.fields.len else 0) + (if (InOut != void) @typeInfo(InOut).Struct.fields.len else 0) + 1;
+    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
     var i = 0;
 
-    if (In != void) {
-        for (@typeInfo(In).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *const AllocatedBuffer(field.type) };
-            i += 1;
-        }
-    }
-    if (InOut != void) {
-        for (@typeInfo(InOut).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *AllocatedBuffer(field.type) };
+    if (Args != void) {
+        for (@typeInfo(Args).Struct.fields) |field| {
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type) };
             i += 1;
         }
     }
@@ -85,23 +78,16 @@ pub fn IterationLogic(comptime In: type, comptime InOut: type, comptime idx_ndim
     } });
 }
 
-pub fn VectorizedLogic(comptime In: type, comptime InOut: type, comptime idx_ndims: u8, comptime vec_len: usize) type {
-    if (In != void) validateArgsType(In);
-    if (InOut != void) validateArgsType(InOut);
+pub fn VectorizedLogic(comptime Args: type, comptime idx_ndims: u8, comptime vec_len: usize) type {
+    if (Args != void) validateArgsType(Args);
 
-    const nparams = (if (In != void) @typeInfo(In).Struct.fields.len else 0) + (if (InOut != void) @typeInfo(InOut).Struct.fields.len else 0) + 1;
+    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
     var i = 0;
 
-    if (In != void) {
-        for (@typeInfo(In).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *const AllocatedVecBuffer(field.type, vec_len) };
-            i += 1;
-        }
-    }
-    if (InOut != void) {
-        for (@typeInfo(InOut).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *AllocatedVecBuffer(field.type, vec_len) };
+    if (Args != void) {
+        for (@typeInfo(Args).Struct.fields) |field| {
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, @Vector(vec_len, utils.Datatype(field.type))) };
             i += 1;
         }
     }

@@ -2,10 +2,10 @@ const std = @import("std");
 const utils = @import("utils.zig");
 const func = @import("func.zig");
 
-const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
+const AllocatedBuffer = @import("buffer.zig").Buffer;
 const IterationSpace = @import("iterspace.zig").IterationSpace;
 
-pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) type {
+pub fn Nest(comptime Args: type, comptime idx_ndims: u8) type {
     return struct {
         const CurrentNest = @This();
         const IterLogicWrapper = struct {
@@ -102,7 +102,7 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
 
         pub fn init(
             comptime iter_space: anytype,
-            comptime iter_logic: func.IterationLogic(In, InOut, idx_ndims),
+            comptime iter_logic: func.IterationLogic(Args, idx_ndims),
         ) @This() {
             const IterSpace: type = @TypeOf(iter_space.*);
             if (IterSpace.ndims == 0) {
@@ -114,7 +114,7 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
                     inline fn wrapped_iter_logic(in: anytype, inout: anytype, idx: [idx_ndims]usize) void {
                         if (comptime iter_space.vector) {
                             const vec_len = IterSpace.shape[IterSpace.ndims - 1];
-                            const VecLogic: type = func.VectorizedLogic(In, InOut, idx_ndims, vec_len);
+                            const VecLogic: type = func.VectorizedLogic(Args, idx_ndims, vec_len);
                             const vectorized_logic = comptime @as(*const VecLogic, @ptrCast(&iter_logic));
                             const vectorized_logic_args = @as(*const std.meta.ArgsTuple(VecLogic), @ptrCast(&(in ++ inout ++ .{idx}))).*;
                             @call(.always_inline, vectorized_logic, vectorized_logic_args);
@@ -176,11 +176,11 @@ pub fn Nest(comptime In: type, comptime InOut: type, comptime idx_ndims: u8) typ
 
 const s = IterationSpace([16][8]bool).init();
 const B = [16][8]bool;
-const Args = struct {
+const TestArgs = struct {
     b: B,
 };
 
-const test_logic: func.IterationLogic(void, Args, 2) = struct {
+const test_logic: func.IterationLogic(TestArgs, 2) = struct {
     // for gpu execution inline this function into a surrounding GPU kernel.
     // Unraveling method would require to be bound to GPU thread / group ids
     inline fn iter_logic(b: *AllocatedBuffer(B), idx: [2]usize) void {
@@ -193,8 +193,8 @@ test "nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const nest = s.nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = s.nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 16,
         .block_info = .{
             .num_blocks = 16,
@@ -233,8 +233,8 @@ test "unroll nest" {
     defer arena.deinit();
 
     const us = comptime s.unroll(1);
-    const nest = us.nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = us.nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 16,
         .block_info = .{
             .num_blocks = 16,
@@ -274,8 +274,8 @@ test "vector nest" {
 
     const vs = comptime s.vectorize();
     try std.testing.expect(@TypeOf(vs).Vec == @Vector(8, bool));
-    const nest = comptime vs.nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = comptime vs.nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 16,
         .block_info = .{
             .block_size = 1,
@@ -315,8 +315,8 @@ test "reorder nest" {
     defer arena.deinit();
 
     const rs = comptime s.reorder(.{ 1, 0 });
-    const nest = comptime rs.nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = comptime rs.nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 8,
         .block_info = .{
             .num_blocks = 8,
@@ -353,8 +353,8 @@ test "parallel nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const nest = comptime s.parallel(1).nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = comptime s.parallel(1).nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 16,
         .block_info = .{
             .num_blocks = 16,
@@ -398,8 +398,8 @@ test "split split vector nest" {
         .vectorize();
     try comptime std.testing.expectEqual(@TypeOf(ssv), IterationSpace([4][4][2]@Vector(4, bool)));
 
-    const nest = comptime ssv.nest(void, Args, test_logic);
-    const expected = comptime Nest(void, Args, 2).Loop{
+    const nest = comptime ssv.nest(TestArgs, test_logic);
+    const expected = comptime Nest(TestArgs, 2).Loop{
         .upper = 4,
         .block_info = .{
             .num_blocks = 4,

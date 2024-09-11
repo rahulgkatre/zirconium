@@ -2,7 +2,7 @@ const std = @import("std");
 const loop = @import("loop.zig");
 const utils = @import("utils.zig");
 const func = @import("func.zig");
-const AllocatedBuffer = @import("buffer.zig").AllocatedBuffer;
+const AllocatedBuffer = @import("buffer.zig").Buffer;
 
 pub fn IterationSpace(comptime Array: type) type {
     return struct {
@@ -210,11 +210,10 @@ pub fn IterationSpace(comptime Array: type) type {
 
         pub fn nest(
             comptime self: *const Self,
-            comptime In: type,
-            comptime InOut: type,
-            comptime iter_logic: func.IterationLogic(In, InOut, self.idx_ndims),
-        ) loop.Nest(In, InOut, self.idx_ndims) {
-            return loop.Nest(In, InOut, self.idx_ndims).init(self, iter_logic);
+            comptime Args: type,
+            comptime iter_logic: func.IterationLogic(Args, self.idx_ndims),
+        ) loop.Nest(Args, self.idx_ndims) {
+            return loop.Nest(Args, self.idx_ndims).init(self, iter_logic);
         }
     };
 }

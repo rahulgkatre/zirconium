@@ -11,16 +11,13 @@ const C = [M][N]f32;
 const BLOCK_SIZE = 128;
 const SIMD_SIZE = 8;
 
-const In = struct {
+const Args = struct {
     a: A,
     b: B,
-};
-
-const InOut = struct {
     c: C,
 };
 
-const matmul_logic: zirconium.IterationLogic(In, InOut, 3) = struct {
+const matmul_logic: zirconium.IterationLogic(Args, 3) = struct {
     inline fn logic(
         a: *const zirconium.AllocatedBuffer(A),
         b: *const zirconium.AllocatedBuffer(B),
@@ -40,7 +37,7 @@ const iter_space = zirconium.IterationSpace([M][N][P]f32)
     .split(4, SIMD_SIZE)
     .vectorize();
 
-const nest = iter_space.nest(In, InOut, matmul_logic);
+const nest = iter_space.nest(Args, matmul_logic);
 
 pub fn main() !void {
     @compileLog(@TypeOf(iter_space));
