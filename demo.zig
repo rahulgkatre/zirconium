@@ -12,12 +12,12 @@ const BLOCK_SIZE = 128;
 const SIMD_SIZE = 8;
 
 const iter_space = zirconium.IterationSpace([M][N][P]f32)
-    .init()
+    .init(.{ "i", "j", "k" })
     .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
     .vectorize();
 
-const Indices: type = iter_space.Indices(.{ "i", "j", "k" });
+const Indices = iter_space.Indices();
 
 const Args = struct {
     a: A,
@@ -39,7 +39,7 @@ const matmul_logic: zirconium.Logic(Args, Indices) = struct {
     }
 }.logic;
 
-const nest = iter_space.nest(Args, .{ "i", "j", "k" }, matmul_logic);
+const nest = iter_space.nest(Args, matmul_logic);
 
 pub fn main() !void {
     // @compileLog(@TypeOf(iter_space));
