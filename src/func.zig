@@ -53,6 +53,7 @@ pub fn ExternFn(comptime Args: type) type {
     } });
 }
 
+/// When defining loop logic, use this type.
 pub fn Logic(comptime Args: type, comptime Indices: type) type {
     const idx_ndims = @typeInfo(Indices).Enum.fields.len;
     if (Args != void) validateArgsType(Args);
@@ -63,7 +64,7 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *IterSpaceBuffer(field.type, null) };
             i += 1;
         }
     }
@@ -81,6 +82,8 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
     } });
 }
 
+/// This type is used to specify the iteration space a buffer will be accessed through.
+/// The iteration space and indices define memory access patterns.
 pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: anytype) type {
     if (Args != void) validateArgsType(Args);
 

@@ -76,13 +76,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
             };
         }
 
-        pub fn within(self: @This(), comptime new_iter_space: anytype) IterSpaceBuffer(Array, new_iter_space) {
-            return IterSpaceBuffer(Array, new_iter_space){
-                .data = self.data,
-                .layout = self.layout,
-            };
-        }
-
+        /// Allocate the array for this buffer.
         pub fn alloc(allocator: std.mem.Allocator) !IterSpaceBuffer(Arr, iter_space) {
             const slice: []align(CACHE_LINE) dtype = try allocator.alignedAlloc(dtype, CACHE_LINE, numel.?);
             if (dtype == bool) {
@@ -101,6 +95,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
             }
         }
 
+        /// Use the strides to convert an n-dimensional index to a flat index
         pub inline fn unravel(b: Self, idx: [ndims]usize) usize {
             var i: usize = 0;
             inline for (0..ndims) |d| {
@@ -109,7 +104,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
             return i;
         }
 
-        // TODO: Using indices + indices_with_info, get
+        /// TODO: Using indices + iter_space, determine the type of Unit.
+        /// e.g. if accessing a vectorized index, Unit should be a vector
         pub inline fn load(
             b: Self,
             comptime indices: [ndims]iter_space.Indices(),
