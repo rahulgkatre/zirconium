@@ -10,15 +10,16 @@ pub fn IterationSpace(comptime Array: type) type {
         pub const dtype: type = utils.Datatype(Array);
         pub const ndims = utils.extractNdims(Array);
         pub const shape: [ndims]usize = utils.extractShape(Array);
-        const ThisUnit = utils.Unit(Array);
-        const ThisVectorized = utils.Vectorized(Array);
-        const default_block_info = blk: {
-            var splits: [ndims]utils.BlockInfo = undefined;
+        const Unit = utils.Unit(Array);
+        const Vectorized = utils.Vectorized(Array);
+        const default_idx_info = blk: {
+            var splits: [ndims]utils.IndexInfo = undefined;
             for (0..ndims) |d| {
                 splits[d] = .{
                     .orig_dim = d,
                     .block_size = 1,
                     .num_blocks = shape[d],
+                    .vector = false,
                 };
             }
             break :blk splits;
@@ -26,12 +27,13 @@ pub fn IterationSpace(comptime Array: type) type {
 
         iter_ndims: u8 = ndims,
         iter_shape: [ndims]usize = shape,
+
         idx_names: []const [:0]const u8,
         idx_ndims: u8,
-        block_info: *const [ndims]utils.BlockInfo = &default_block_info,
+        idx_info: *const [ndims]utils.IndexInfo = &default_idx_info,
+
         unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
         parallel_dims: *const [ndims]bool = &(.{false} ** ndims),
-        vector: bool = (ThisUnit == Vec),
 
         pub fn init(comptime idx_names: [ndims][:0]const u8) Self {
             return .{
@@ -79,22 +81,26 @@ pub fn IterationSpace(comptime Array: type) type {
                 return b.*;
             }
 
-            const block_info1: utils.BlockInfo = .{
-                .orig_dim = b.block_info[dim].orig_dim,
-                .num_blocks = Split(dim, block_size).shape[dim],
+            const num_blocks = @divExact(shape[dim], block_size);
+
+            const idx_info1: utils.IndexInfo = .{
+                .orig_dim = b.idx_info[dim].orig_dim,
+                .num_blocks = num_blocks,
                 .block_size = block_size,
+                .vector = false,
             };
 
-            const block_info2: utils.BlockInfo = .{
-                .orig_dim = b.block_info[dim].orig_dim,
-                .num_blocks = Split(dim, block_size).shape[dim + 1],
-                .block_size = b.block_info[dim].block_size,
+            const idx_info2: utils.IndexInfo = .{
+                .orig_dim = b.idx_info[dim].orig_dim,
+                .num_blocks = block_size,
+                .block_size = b.idx_info[dim].block_size,
+                .vector = b.idx_info[dim].vector,
             };
 
             return .{
                 .idx_ndims = b.idx_ndims,
                 .idx_names = b.idx_names,
-                .block_info = b.block_info[0..dim] ++ .{ block_info1, block_info2 } ++ b.block_info[dim + 1 .. ndims],
+                .idx_info = b.idx_info[0..dim] ++ .{ idx_info1, idx_info2 } ++ b.idx_info[dim + 1 .. ndims],
                 .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
                 .parallel_dims = b.parallel_dims[0..dim] ++ .{false} ++ b.parallel_dims[dim..ndims],
             };
@@ -175,10 +181,18 @@ pub fn IterationSpace(comptime Array: type) type {
 
         // By setting NonVectorized to void if it is already vectorized
         // the following function is removed from the namespace of this type
-        const NonVectorized = if (ThisVectorized != void) Self else void;
-        pub fn vectorize(b: *const NonVectorized) IterationSpace(ThisVectorized) {
+        const NonVectorized = if (Vectorized != void) Self else void;
+        pub fn vectorize(comptime b: *const NonVectorized) IterationSpace(Vectorized) {
+            const new_idx_info = blk: {
+                var orig_info = b.idx_info.*;
+                const dim_int = ndims - 1;
+                orig_info[dim_int].vector = true;
+                orig_info[dim_int].block_size = shape[ndims - 1];
+                orig_info[dim_int].num_blocks = 1;
+                break :blk orig_info;
+            };
             return .{
-                .block_info = b.block_info,
+                .idx_info = &new_idx_info,
                 .idx_names = b.idx_names,
                 .idx_ndims = b.idx_ndims,
                 .unrolled_dims = b.unrolled_dims,
@@ -194,7 +208,7 @@ pub fn IterationSpace(comptime Array: type) type {
                 break :blk orig_unrolled_dims;
             };
             return .{
-                .block_info = b.block_info,
+                .idx_info = b.idx_info,
                 .idx_ndims = b.idx_ndims,
                 .idx_names = b.idx_names,
                 .unrolled_dims = new_unrolled_dims,
@@ -208,7 +222,7 @@ pub fn IterationSpace(comptime Array: type) type {
         }
         pub fn reorder(comptime b: *const Self, comptime new_order: [ndims]u8) Reorder(new_order) {
             return .{
-                .block_info = &comptime utils.arrayPermute(utils.BlockInfo, ndims, b.block_info.*, new_order),
+                .idx_info = &comptime utils.arrayPermute(utils.IndexInfo, ndims, b.idx_info.*, new_order),
                 .idx_ndims = b.idx_ndims,
                 .idx_names = b.idx_names,
                 .unrolled_dims = &comptime utils.arrayPermute(bool, ndims, b.unrolled_dims.*, new_order),
@@ -224,7 +238,7 @@ pub fn IterationSpace(comptime Array: type) type {
                 break :blk orig_parallel_dims;
             };
             return .{
-                .block_info = b.block_info,
+                .idx_info = b.idx_info,
                 .idx_ndims = b.idx_ndims,
                 .idx_names = b.idx_names,
                 .unrolled_dims = b.unrolled_dims,
@@ -237,7 +251,7 @@ pub fn IterationSpace(comptime Array: type) type {
             comptime Args: type,
             comptime iter_logic: func.Logic(Args, self.Indices()),
         ) loop.Nest(Args, self) {
-            return loop.Nest(Args, self).init(self.Indices(), iter_logic);
+            return loop.Nest(Args, self).init(iter_logic);
         }
     };
 }
@@ -250,45 +264,52 @@ test "tile" {
 test "split" {
     const st = comptime IterationSpace([16][8]f32).init(.{ "i", "j" }).split(0, 4);
     try std.testing.expect(@TypeOf(st) == IterationSpace([4][4][8]f32));
-    try std.testing.expectEqualSlices(utils.BlockInfo, &.{
+    try std.testing.expectEqualSlices(utils.IndexInfo, &.{
         .{
             .orig_dim = 0,
             .block_size = 4,
             .num_blocks = 4,
+            .vector = false,
         },
         .{
             .orig_dim = 0,
             .block_size = 1,
             .num_blocks = 4,
+            .vector = false,
         },
         .{
             .orig_dim = 1,
             .block_size = 1,
             .num_blocks = 8,
+            .vector = false,
         },
-    }, st.block_info);
+    }, st.idx_info);
 }
 
 test "split_split" {
     const sst = comptime IterationSpace([16][8]f32).init(.{ "i", "j" }).split(0, 4).split(0, 2);
     try std.testing.expect(@TypeOf(sst) == IterationSpace([2][2][4][8]f32));
-    try std.testing.expectEqualSlices(utils.BlockInfo, &.{ .{
+    try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
         .orig_dim = 0,
         .block_size = 2,
         .num_blocks = 2,
+        .vector = false,
     }, .{
         .orig_dim = 0,
         .block_size = 4,
         .num_blocks = 2,
+        .vector = false,
     }, .{
         .orig_dim = 0,
         .block_size = 1,
         .num_blocks = 4,
+        .vector = false,
     }, .{
         .orig_dim = 1,
         .num_blocks = 8,
         .block_size = 1,
-    } }, sst.block_info);
+        .vector = false,
+    } }, sst.idx_info);
 }
 
 test "vectorize" {
@@ -302,17 +323,20 @@ test "split_vectorize" {
         .split(0, 4)
         .vectorize();
     try std.testing.expect(@TypeOf(svt) == IterationSpace([4][4]@Vector(8, f32)));
-    try std.testing.expectEqualSlices(utils.BlockInfo, &.{ .{
+    try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
         .orig_dim = 0,
         .block_size = 4,
         .num_blocks = 4,
+        .vector = false,
     }, .{
         .orig_dim = 0,
         .block_size = 1,
         .num_blocks = 4,
+        .vector = false,
     }, .{
         .orig_dim = 1,
-        .num_blocks = 8,
-        .block_size = 1,
-    } }, svt.block_info);
+        .num_blocks = 1,
+        .block_size = 8,
+        .vector = true,
+    } }, svt.idx_info);
 }

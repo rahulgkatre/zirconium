@@ -1,29 +1,27 @@
 const std = @import("std");
 const loop = @import("loop.zig");
+const iterspace = @import("iterspace.zig");
 const utils = @import("utils.zig");
 
-pub fn Buffer(comptime Array: type, comptime Indices: type) type {
-    return TiledBuffer(Array, Indices, void);
+pub fn Buffer(comptime Array: type) type {
+    return IterSpaceBuffer(Array, null);
 }
 
-pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: type) type {
-    switch (@typeInfo(Tile)) {
-        .Vector, .Array, .Void => {},
-        else => @compileError("Unsupported tile type: " ++ @typeName(Tile)),
+pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) type {
+    var default_idx_names: [utils.extractNdims(Array)][:0]const u8 = undefined;
+    for (0..default_idx_names.len) |dim| {
+        default_idx_names[dim] = std.fmt.comptimePrint("dim{d}", .{dim});
     }
-    const nindices: u8 = switch (@typeInfo(Indices)) {
-        .Enum => |info| @intCast(info.fields.len),
-        else => @compileError("Indices type must be enum, received " ++ @typeName(Indices)),
-    };
+    const IterSpace = if (@TypeOf(raw_iter_space) == @TypeOf(null)) iterspace.IterationSpace(Array) else iterspace.IterationSpace(@TypeOf(raw_iter_space).Arr);
+    const iter_space: IterSpace = if (@TypeOf(raw_iter_space) == @TypeOf(null)) iterspace.IterationSpace(Array).init(default_idx_names) else @as(*const IterSpace, @ptrCast(&raw_iter_space)).*;
 
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
-        const TILE_ALIGN = @alignOf(Tile);
-        pub const alignment = @max(TILE_ALIGN, CACHE_LINE);
 
-        layout: utils.Layout,
-        data: [*]dtype align(alignment),
+        const Tile = @Vector(iter_space.iter_shape[iter_space.iter_ndims - 1], dtype);
+
+        const TILE_ALIGN = @alignOf(Tile);
 
         pub const dtype = utils.Datatype(Array);
         const ndims = utils.extractNdims(Array);
@@ -31,7 +29,10 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
         /// Vectorized contiguous dim of the buffer.
         pub const Arr: type = Array;
 
-        pub const Unit = if (Tile != void) Tile else dtype;
+        pub const Unit = if (iter_space.idx_info[iter_space.iter_ndims - 1].vector) Tile else dtype;
+
+        layout: utils.Layout,
+        data: [*]dtype align(CACHE_LINE),
 
         const numel: ?comptime_int = blk: {
             var n = 1;
@@ -61,8 +62,8 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
             break :blk strides;
         };
 
-        pub fn init(slice: []align(alignment) dtype) Buffer(Arr, Indices) {
-            return Buffer(Arr, Indices){
+        pub fn init(slice: []align(CACHE_LINE) dtype) IterSpaceBuffer(Arr, iter_space) {
+            return Buffer(Arr){
                 .layout = .{
                     .ndims = ndims,
                     .shape = &shape,
@@ -75,8 +76,15 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
             };
         }
 
-        pub fn alloc(allocator: std.mem.Allocator) !Buffer(Arr, Indices) {
-            const slice: []align(alignment) dtype = try allocator.alignedAlloc(dtype, alignment, numel.?);
+        pub fn within(self: @This(), comptime new_iter_space: anytype) IterSpaceBuffer(Array, new_iter_space) {
+            return IterSpaceBuffer(Array, new_iter_space){
+                .data = self.data,
+                .layout = self.layout,
+            };
+        }
+
+        pub fn alloc(allocator: std.mem.Allocator) !IterSpaceBuffer(Arr, iter_space) {
+            const slice: []align(CACHE_LINE) dtype = try allocator.alignedAlloc(dtype, CACHE_LINE, numel.?);
             if (dtype == bool) {
                 @memset(slice, false);
             } else {
@@ -101,16 +109,17 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
             return i;
         }
 
+        // TODO: Using indices + indices_with_info, get
         pub inline fn load(
             b: Self,
-            comptime indices: [ndims]Indices,
-            idx: [nindices]usize,
+            comptime indices: [ndims]iter_space.Indices(),
+            idx: [iter_space.idx_ndims]usize,
         ) Unit {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(Tile)) {
+            switch (@typeInfo(Unit)) {
                 .Vector => |info| {
                     const len = info.len;
                     const val: *const Unit = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
@@ -119,22 +128,21 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
                 },
-                .Void => return b.data[b.unravel(selected)],
-                else => unreachable,
+                else => return b.data[b.unravel(selected)],
             }
         }
 
         pub inline fn store(
             b: Self,
-            comptime indices: [ndims]Indices,
+            comptime indices: [ndims]iter_space.Indices(),
             val: Unit,
-            idx: [nindices]usize,
+            idx: [iter_space.idx_ndims]usize,
         ) void {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(Tile)) {
+            switch (@typeInfo(Unit)) {
                 .Vector => |info| {
                     const len = info.len;
                     const dst: *[len]dtype = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
@@ -143,8 +151,7 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
                 },
-                .Void => b.data[b.unravel(selected)] = val,
-                else => unreachable,
+                else => b.data[b.unravel(selected)] = val,
             }
         }
     };
@@ -152,7 +159,7 @@ pub fn TiledBuffer(comptime Array: type, comptime Indices: type, comptime Tile: 
 
 test "init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    var d = try Buffer([16][8]f32, enum {}).alloc(arena.allocator());
+    var d = try Buffer([16][8]f32).alloc(arena.allocator());
     defer arena.deinit();
 
     try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[0][0]) == @intFromPtr(&d.data[0]));

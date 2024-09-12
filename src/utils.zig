@@ -1,10 +1,11 @@
 const std = @import("std");
 const IterationSpace = @import("iterspace.zig").IterationSpace;
 
-pub const BlockInfo = struct {
+pub const IndexInfo = struct {
     orig_dim: u8,
     num_blocks: usize,
     block_size: usize,
+    vector: bool,
 };
 
 pub fn ShapeToArray(comptime dtype: type, comptime ndims: u8, comptime shape: *const [ndims]usize) type {

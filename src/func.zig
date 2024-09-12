@@ -1,7 +1,9 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 const Buffer = @import("buffer.zig").Buffer;
-const TiledBuffer = @import("buffer.zig").TiledBuffer;
+const IterSpaceBuffer = @import("buffer.zig").IterSpaceBuffer;
+
+const TiledBuffer = @import("buffer.zig").IndexedTiledBuffer;
 
 fn validateArgsType(comptime Type: type) void {
     switch (@typeInfo(Type)) {
@@ -61,7 +63,7 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type, Indices) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type) };
             i += 1;
         }
     }
@@ -79,8 +81,7 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
     } });
 }
 
-pub fn VectorizedLogic(comptime Args: type, comptime Indices: type, comptime vec_len: usize) type {
-    const idx_ndims = @typeInfo(Indices).Enum.fields.len;
+pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: anytype) type {
     if (Args != void) validateArgsType(Args);
 
     const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
@@ -89,14 +90,14 @@ pub fn VectorizedLogic(comptime Args: type, comptime Indices: type, comptime vec
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, Indices, @Vector(vec_len, utils.Datatype(field.type))) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *IterSpaceBuffer(field.type, iter_space) };
             i += 1;
         }
     }
     params[i] = .{
         .is_generic = false,
         .is_noalias = false,
-        .type = [idx_ndims]usize,
+        .type = [iter_space.idx_ndims]usize,
     };
     return @Type(.{ .Fn = .{
         .calling_convention = std.builtin.CallingConvention.Inline,
@@ -106,3 +107,31 @@ pub fn VectorizedLogic(comptime Args: type, comptime Indices: type, comptime vec
         .return_type = void,
     } });
 }
+
+// pub fn VectorizedLogic(comptime Args: type, comptime iter_space: anytype) type {
+//     const vec_len = iter_space.shape[]
+//     if (Args != void) validateArgsType(Args);
+
+//     const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
+//     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
+//     var i = 0;
+
+//     if (Args != void) {
+//         for (@typeInfo(Args).Struct.fields) |field| {
+//             params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, @Vector(vec_len, utils.Datatype(field.type))) };
+//             i += 1;
+//         }
+//     }
+//     params[i] = .{
+//         .is_generic = false,
+//         .is_noalias = false,
+//         .type = [idx_ndims]usize,
+//     };
+//     return @Type(.{ .Fn = .{
+//         .calling_convention = std.builtin.CallingConvention.Inline,
+//         .is_generic = false,
+//         .is_var_args = false,
+//         .params = &params,
+//         .return_type = void,
+//     } });
+// }

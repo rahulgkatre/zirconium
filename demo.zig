@@ -34,8 +34,8 @@ const matmul_logic: zirconium.Logic(Args, Indices) = struct {
     ) void {
         const _a = a.load(.{ .i, .k }, idx);
         const _b = b_t.load(.{ .j, .k }, idx);
-        const _c = c.load(.{ .i, .j }, idx);
-        c.store(.{ .i, .j }, @mulAdd(@TypeOf(a.*).Unit, _a, _b, _c), idx);
+        const _c = c.load(.{ .dim0, .dim1 }, idx);
+        c.store(.{ .dim0, .dim1 }, @mulAdd(@TypeOf(a.*).Unit, _a, _b, _c), idx);
     }
 }.logic;
 
