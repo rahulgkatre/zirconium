@@ -15,10 +15,10 @@ const Indices = enum { i, j, k };
 
 const iter_space = zirconium.IterationSpace([M][N][P]f32, Indices)
     .init()
-    .tile(&.{ .{ .i, BLOCK_SIZE }, .{ .j, BLOCK_SIZE } })
+    .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
     .parallel(1)
-    .vectorize();
+    .vectorize(5);
 
 const Args = struct {
     a: A,

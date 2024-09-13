@@ -180,6 +180,43 @@ test "nest" {
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
 
+test "runtime bounds" {
+    // TODO: To support runtime array sizes, the eval function will need to have extra args for runtime sizes.
+    // This should still be doable, can maybe construct a new type from Args type that identifies
+    // runtime bounds given by [*] and converts them to a tuple type where the bound must be specified
+    // e.g. [16][*]f32 => std.meta.Tuple(&.{?usize, usize})
+    // Args = struct { a: [16][*]f32 } => RuntimeSizes = struct { a: std.meta.Tuple(&.{?usize, usize}) }
+    // Obviously, unrolling, vectorization won't be allowed.
+    // Splitting might have some restrictions applied and will definitely need to have boundary handling
+    // Parallelism might also get a little weird, we can technically launch as many threads as we want but
+    // there would be runtime overhead to allocate the array for threads (either arraylist or alloc)
+    // GPU would be tbd
+
+    // var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    // defer arena.deinit();
+    // const nest = test_iter_space.nest(TestArgs, test_logic);
+    // try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
+    //     .num_blocks = 16,
+    //     .idx_dim = 0,
+    //     .vector = false,
+    //     .block_size = 1,
+    //     .unrolled = false,
+    //     .parallel = false,
+    // }, .{
+    //     .num_blocks = 8,
+    //     .idx_dim = 1,
+    //     .vector = false,
+    //     .block_size = 1,
+    //     .unrolled = false,
+    //     .parallel = false,
+    // } }, test_iter_space.loop_info);
+
+    // var b = try nest.alloc(B, arena.allocator());
+
+    // nest.eval(.{&b});
+    // try std.testing.expectEqualSlices(bool, &(.{true} ** 64 ++ .{false} ** 64), b.data[0..128]);
+}
+
 test "unroll nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
