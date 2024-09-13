@@ -3,7 +3,7 @@ const utils = @import("utils.zig");
 const func = @import("func.zig");
 
 const buffer = @import("buffer.zig");
-const iterspace = @import("iterspace.zig");
+const IterSpace = @import("IterSpace.zig");
 
 pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
     return struct {
@@ -135,7 +135,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
 
 const TestIndices = enum { i, j };
 
-const test_iter_space = iterspace.init(.{ 16, 8 }, TestIndices);
+const test_iter_space = IterSpace.init(.{ 16, 8 }, TestIndices);
 const B = [16][8]bool;
 const TestArgs = struct {
     b: B,

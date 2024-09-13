@@ -45,7 +45,7 @@ const nest = iter_space.nest(Args, matmul_logic);
 pub fn main() !void {
     // @compileLog(@TypeOf(iter_space));
     // TODO: Need to support vectorized reduction
-    // by specifying a reduction dimension in the iterspace, and a reduce op to apply
+    // by specifying a reduction dimension in the IterSpace, and a reduce op to apply
     const std = @import("std");
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

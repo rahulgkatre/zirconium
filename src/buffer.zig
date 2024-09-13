@@ -1,14 +1,14 @@
 const std = @import("std");
 const loop = @import("loop.zig");
-const iterspace = @import("iterspace.zig");
+const IterSpace = @import("IterSpace.zig");
 const utils = @import("utils.zig");
 
 pub fn Buffer(comptime Array: type, comptime Indices: type) type {
-    const iter_space = iterspace.init(utils.extractShape(Array), Indices);
+    const iter_space = IterSpace.init(utils.extractShape(Array), Indices);
     return IterSpaceBuffer(Array, iter_space);
 }
 
-pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: iterspace) type {
+pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) type {
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;

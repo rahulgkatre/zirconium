@@ -1,5 +1,5 @@
 const std = @import("std");
-const IterationSpace = @import("iterspace.zig").IterationSpace;
+const IterationSpace = @import("IterSpace.zig").IterationSpace;
 
 pub const LoopInfo = struct {
     idx_min: usize = 0,
