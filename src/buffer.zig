@@ -24,8 +24,6 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
         /// Vectorized contiguous dim of the buffer.
         pub const Arr: type = Array;
 
-        pub const Unit = if (iter_space.idx_info[iter_space.iter_ndims - 1].vector) Tile else dtype;
-
         layout: utils.Layout,
         data: [*]dtype align(CACHE_LINE),
 
@@ -82,8 +80,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
             return init(slice);
         }
 
-        pub fn constant(_: Self, val: dtype) Unit {
-            if (Unit == dtype) {
+        pub fn constant(_: Self, comptime indices: [ndims]iter_space.Ind, val: dtype) StoredData(indices) {
+            if (StoredData(indices) == dtype) {
                 return val;
             } else {
                 return @splat(val);
@@ -99,6 +97,18 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
             return i;
         }
 
+        fn StoredData(comptime indices: [ndims]iter_space.Ind) type {
+            for (indices, 0..) |ind, d| {
+                const dim = @intFromEnum(ind);
+                for (iter_space.idx_info) |idx_info| {
+                    if (idx_info.orig_dim == dim and idx_info.vector and d == ndims - 1) {
+                        return @Vector(idx_info.block_size, dtype);
+                    }
+                }
+            }
+            return dtype;
+        }
+
         /// TODO: Using indices + iter_space, determine the type of Unit.
         /// e.g. if accessing a vectorized index, Unit should be a vector
         pub inline fn load(
@@ -106,16 +116,16 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
             /// Specify which indices of the iteration space will be used to index into the array
             comptime indices: [ndims]iter_space.Ind,
             idx: [iter_space.idx_ndims]usize,
-        ) Unit {
+        ) StoredData(indices) {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(Unit)) {
+            switch (@typeInfo(StoredData(indices))) {
                 .Vector => |info| {
                     const len = info.len;
-                    const val: *const Unit = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
-                    return val.*;
+                    // TODO: Confirm assembly still has vmovaps
+                    return b.data[b.unravel(selected)..][0..len].*;
                 },
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
@@ -127,14 +137,17 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
         pub inline fn store(
             b: Self,
             comptime indices: [ndims]iter_space.Ind,
-            val: Unit,
+            // idea; make val anytype, store reduction dimension info in idx type along with reduction op
+            // if val is a vector, reduce it with the op, otherwise proceed with storing the val directly
+            // if both are vectors, no reduction is needed
+            val: StoredData(indices),
             idx: [iter_space.idx_ndims]usize,
         ) void {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(Unit)) {
+            switch (@typeInfo(StoredData(indices))) {
                 .Vector => |info| {
                     const len = info.len;
                     const dst: *[len]dtype = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
