@@ -15,7 +15,7 @@ const Indices = enum { i, j, k };
 
 const iter_space = zirconium.IterationSpace([M][N][P]f32, Indices)
     .init()
-    .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
+    .tile(&.{ .{ .i, BLOCK_SIZE }, .{ .j, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
     .parallel(1)
     .vectorize();
@@ -27,7 +27,7 @@ const Args = struct {
 };
 
 const matmul_logic: zirconium.Logic(Args, Indices) = struct {
-    inline fn logic(
+    pub inline fn logic(
         a: *const zirconium.Buffer(A, Indices),
         b_t: *const zirconium.Buffer(B, Indices),
         c: *zirconium.Buffer(C, Indices),

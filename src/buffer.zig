@@ -14,7 +14,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
 
-        const Tile = @Vector(iter_space.iter_shape[iter_space.iter_ndims - 1], dtype);
+        const Tile = @Vector(iter_space.shape[iter_space.ndims - 1], dtype);
 
         const TILE_ALIGN = @alignOf(Tile);
 
@@ -100,9 +100,9 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
         fn StoredData(comptime indices: [ndims]iter_space.Ind) type {
             for (indices, 0..) |ind, d| {
                 const dim = @intFromEnum(ind);
-                for (iter_space.idx_info) |idx_info| {
-                    if (idx_info.orig_dim == dim and idx_info.vector and d == ndims - 1) {
-                        return @Vector(idx_info.block_size, dtype);
+                for (iter_space.loop_info) |loop_info| {
+                    if (loop_info.idx_dim == dim and loop_info.vector and d == ndims - 1) {
+                        return @Vector(loop_info.block_size, dtype);
                     }
                 }
             }
@@ -130,6 +130,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
                 },
+                // TODO: splat if one dimension is a vector but the contiguous dimension is not
                 else => return b.data[b.unravel(selected)],
             }
         }

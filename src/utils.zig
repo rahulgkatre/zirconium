@@ -1,11 +1,15 @@
 const std = @import("std");
 const IterationSpace = @import("iterspace.zig").IterationSpace;
 
-pub const IndexInfo = struct {
-    orig_dim: u8,
+pub const LoopInfo = struct {
+    idx_min: usize = 0,
+    idx_dim: u8,
     num_blocks: usize,
     block_size: usize,
     vector: bool,
+    unrolled: bool,
+    parallel: bool,
+    gpu: bool = false,
 };
 
 pub fn ShapeToArray(comptime dtype: type, comptime ndims: u8, comptime shape: *const [ndims]usize) type {

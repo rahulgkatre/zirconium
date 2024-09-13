@@ -10,39 +10,37 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
         pub const dtype: type = utils.Datatype(Array);
         pub const ndims = utils.extractNdims(Array);
         pub const shape: [ndims]usize = utils.extractShape(Array);
-        const Unit = utils.Unit(Array);
-        const Vectorized = utils.Vectorized(Array);
-        const default_idx_info = blk: {
-            var splits: [ndims]utils.IndexInfo = undefined;
+        const default_info = blk: {
+            var splits: [ndims]utils.LoopInfo = undefined;
             for (0..ndims) |d| {
                 splits[d] = .{
-                    .orig_dim = d,
+                    .idx_dim = d,
                     .block_size = 1,
                     .num_blocks = shape[d],
                     .vector = false,
+                    .unrolled = false,
+                    .parallel = false,
                 };
             }
             break :blk splits;
         };
 
-        iter_ndims: u8 = ndims,
-        iter_shape: [ndims]usize = shape,
+        ndims: u8 = ndims,
+        shape: [ndims]usize = shape,
         comptime Ind: type = Indices,
         comptime Arr: type = Array,
 
         idx_ndims: u8,
-        idx_info: *const [ndims]utils.IndexInfo = &default_idx_info,
-
-        unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
-        parallel_dims: *const [ndims]bool = &(.{false} ** ndims),
+        loop_info: *const [ndims]utils.LoopInfo = &default_info,
 
         pub fn init() Self {
-            return .{
-                .idx_ndims = ndims,
-            };
+            return .{ .idx_ndims = ndims };
         }
 
-        fn Split(comptime dim: u8, comptime block_size: usize) type {
+        fn Split(
+            comptime dim: u8,
+            comptime block_size: usize,
+        ) type {
             std.debug.assert(dim < ndims);
             // TODO: Support splits that don't divide evenly
             // Give the option of how to evaluate the uneven part
@@ -61,36 +59,45 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             return IterationSpace(utils.ShapeToArray(dtype, ndims + 1, pre ++ .{ num_blocks, block_size } ++ post), Indices);
         }
 
-        pub fn split(comptime b: *const Self, comptime dim: u8, comptime block_size: usize) Split(dim, block_size) {
+        pub fn split(
+            comptime b: *const Self,
+            comptime dim: u8,
+            comptime block_size: usize,
+        ) Split(dim, block_size) {
             if (Split(dim, block_size) == Self) {
                 return b.*;
             }
 
             const num_blocks = @divExact(shape[dim], block_size);
 
-            const idx_info1: utils.IndexInfo = .{
-                .orig_dim = b.idx_info[dim].orig_dim,
+            const loop_info1: utils.LoopInfo = .{
+                .idx_dim = b.loop_info[dim].idx_dim,
                 .num_blocks = num_blocks,
                 .block_size = block_size,
                 .vector = false,
+                .unrolled = false,
+                .parallel = false,
             };
 
-            const idx_info2: utils.IndexInfo = .{
-                .orig_dim = b.idx_info[dim].orig_dim,
+            const loop_info2: utils.LoopInfo = .{
+                .idx_dim = b.loop_info[dim].idx_dim,
                 .num_blocks = block_size,
-                .block_size = b.idx_info[dim].block_size,
-                .vector = b.idx_info[dim].vector,
+                .block_size = b.loop_info[dim].block_size,
+                .vector = b.loop_info[dim].vector,
+                .unrolled = b.loop_info[dim].unrolled,
+                .parallel = b.loop_info[dim].parallel,
             };
 
             return .{
                 .idx_ndims = b.idx_ndims,
-                .idx_info = b.idx_info[0..dim] ++ .{ idx_info1, idx_info2 } ++ b.idx_info[dim + 1 .. ndims],
-                .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
-                .parallel_dims = b.parallel_dims[0..dim] ++ .{false} ++ b.parallel_dims[dim..ndims],
+                .loop_info = b.loop_info[0..dim] ++ .{ loop_info1, loop_info2 } ++ b.loop_info[dim + 1 .. ndims],
             };
         }
 
-        fn TileHelper(comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) type {
+        fn TileHelper(
+            comptime dim_offset: u8,
+            comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+        ) type {
             const dim, const block_size = sorted_tile_config[0];
             if (sorted_tile_config.len > 1) {
                 return Split(dim + dim_offset, block_size)
@@ -99,7 +106,11 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             return Split(dim + dim_offset, block_size);
         }
 
-        fn tileHelper(comptime b: *const Self, comptime dim_offset: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) TileHelper(dim_offset, sorted_tile_config) {
+        fn tileHelper(
+            comptime b: *const Self,
+            comptime dim_offset: u8,
+            comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+        ) TileHelper(dim_offset, sorted_tile_config) {
             const dim, const block_size = sorted_tile_config[0];
             if (sorted_tile_config.len > 1) {
                 // dim offset is needed because as we process each split, a new dim is added.
@@ -110,13 +121,16 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             return b.split(dim + dim_offset, block_size);
         }
 
-        fn tileReorder(comptime tile_ndims: u8, comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize })) []const u8 {
+        fn tileReorder(
+            comptime tile_ndims: u8,
+            comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+        ) []const u8 {
             var new_order: [tile_ndims]u8 = undefined;
             var added_dims: [tile_ndims]bool = .{false} ** tile_ndims;
 
             for (sorted_tile_config, 0..) |tile_cfg, count| {
-                const orig_dim, _ = tile_cfg;
-                const new_dim = orig_dim + count;
+                const idx_dim, _ = tile_cfg;
+                const new_dim = idx_dim + count;
                 new_order[count + sorted_tile_config[0][0]] = new_dim;
                 added_dims[new_dim] = true;
             }
@@ -137,7 +151,9 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             return &new_order;
         }
 
-        fn Tile(comptime tile_config: []const std.meta.Tuple(&.{ u8, usize })) type {
+        fn Tile(
+            comptime tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+        ) type {
             var sorted_tile_config = tile_config[0..tile_config.len].*;
             std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tile_config, {}, struct {
                 fn lessThan(_: void, lhs: std.meta.Tuple(&.{ u8, usize }), rhs: std.meta.Tuple(&.{ u8, usize })) bool {
@@ -148,7 +164,10 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             return Tiled.Reorder(tileReorder(Tiled.ndims, &sorted_tile_config)[0..Tiled.ndims].*);
         }
 
-        pub fn tile(comptime b: *const Self, comptime tile_config: []const std.meta.Tuple(&.{ u8, usize })) Tile(tile_config) {
+        pub fn tile(
+            comptime b: *const Self,
+            comptime tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+        ) Tile(tile_config) {
             // tile helper creates the extra splits, but it still needs to be reordered
             var sorted_tile_config = tile_config[0..tile_config.len].*;
             std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tile_config, {}, struct {
@@ -166,36 +185,39 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
 
         // By setting NonVectorized to void if it is already vectorized
         // the following function is removed from the namespace of this type
-        const NonVectorized = if (Vectorized != void) Self else void;
-        pub fn vectorize(comptime b: *const NonVectorized) IterationSpace(Vectorized, Indices) {
-            const new_idx_info = blk: {
-                var orig_info = b.idx_info.*;
-                const dim_int = ndims - 1;
-                orig_info[dim_int].vector = true;
-                orig_info[dim_int].block_size = shape[ndims - 1];
-                orig_info[dim_int].num_blocks = 1;
+        pub fn vectorize(
+            comptime b: *const Self,
+            comptime dim: u8,
+        ) Self {
+            const new_loop_info = blk: {
+                var orig_info = b.loop_info.*;
+                orig_info[dim].vector = true;
+                orig_info[dim].block_size = shape[ndims - 1];
+                orig_info[dim].num_blocks = 1;
+                orig_info[dim].parallel = false;
+                orig_info[dim].unrolled = false;
                 break :blk orig_info;
             };
             return .{
-                .idx_info = &new_idx_info,
+                .loop_info = &new_loop_info,
                 .idx_ndims = b.idx_ndims,
-                .unrolled_dims = b.unrolled_dims,
-                .parallel_dims = b.parallel_dims,
             };
         }
 
-        pub fn unroll(comptime b: *const Self, comptime dim: u8) Self {
-            const new_unrolled_dims: *const [ndims]bool = &comptime blk: {
-                var orig_unrolled_dims = b.unrolled_dims.*;
-                std.debug.assert(!orig_unrolled_dims[dim]);
-                orig_unrolled_dims[dim] = true;
-                break :blk orig_unrolled_dims;
+        pub fn unroll(
+            comptime b: *const Self,
+            comptime dim: u8,
+        ) Self {
+            const new_loop_info = blk: {
+                var orig_info = b.loop_info.*;
+                orig_info[dim].parallel = false;
+                orig_info[dim].unrolled = true;
+                orig_info[dim].vector = false;
+                break :blk orig_info;
             };
             return .{
-                .idx_info = b.idx_info,
+                .loop_info = &new_loop_info,
                 .idx_ndims = b.idx_ndims,
-                .unrolled_dims = new_unrolled_dims,
-                .parallel_dims = b.parallel_dims,
             };
         }
 
@@ -203,27 +225,30 @@ pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
             const new_shape = utils.arrayPermute(usize, ndims, shape, new_order);
             return IterationSpace(utils.ShapeToArray(dtype, ndims, &new_shape), Indices);
         }
-        pub fn reorder(comptime b: *const Self, comptime new_order: [ndims]u8) Reorder(new_order) {
+        pub fn reorder(
+            comptime b: *const Self,
+            comptime new_order: [ndims]u8,
+        ) Reorder(new_order) {
             return .{
-                .idx_info = &comptime utils.arrayPermute(utils.IndexInfo, ndims, b.idx_info.*, new_order),
+                .loop_info = &comptime utils.arrayPermute(utils.LoopInfo, ndims, b.loop_info.*, new_order),
                 .idx_ndims = b.idx_ndims,
-                .unrolled_dims = &comptime utils.arrayPermute(bool, ndims, b.unrolled_dims.*, new_order),
-                .parallel_dims = &comptime utils.arrayPermute(bool, ndims, b.parallel_dims.*, new_order),
             };
         }
 
-        pub fn parallel(comptime b: *const Self, comptime dim: u8) Self {
-            const new_parallel_dims: *const [ndims]bool = &comptime blk: {
-                var orig_parallel_dims = b.parallel_dims.*;
-                std.debug.assert(!orig_parallel_dims[dim]);
-                orig_parallel_dims[dim] = true;
-                break :blk orig_parallel_dims;
+        pub fn parallel(
+            comptime b: *const Self,
+            comptime dim: u8,
+        ) Self {
+            const new_loop_info = blk: {
+                var orig_info = b.loop_info.*;
+                orig_info[dim].parallel = true;
+                orig_info[dim].unrolled = false;
+                orig_info[dim].vector = false;
+                break :blk orig_info;
             };
             return .{
-                .idx_info = b.idx_info,
+                .loop_info = &new_loop_info,
                 .idx_ndims = b.idx_ndims,
-                .unrolled_dims = b.unrolled_dims,
-                .parallel_dims = new_parallel_dims,
             };
         }
 
@@ -248,82 +273,102 @@ test "split" {
     const Ind = enum { i, j };
     const st = comptime IterationSpace([16][8]f32, Ind).init().split(0, 4);
     try std.testing.expect(@TypeOf(st) == IterationSpace([4][4][8]f32, Ind));
-    try std.testing.expectEqualSlices(utils.IndexInfo, &.{
+    try std.testing.expectEqualSlices(utils.LoopInfo, &.{
         .{
-            .orig_dim = 0,
+            .idx_dim = 0,
             .block_size = 4,
             .num_blocks = 4,
             .vector = false,
+            .unrolled = false,
+            .parallel = false,
         },
         .{
-            .orig_dim = 0,
+            .idx_dim = 0,
             .block_size = 1,
             .num_blocks = 4,
             .vector = false,
+            .unrolled = false,
+            .parallel = false,
         },
         .{
-            .orig_dim = 1,
+            .idx_dim = 1,
             .block_size = 1,
             .num_blocks = 8,
             .vector = false,
+            .unrolled = false,
+            .parallel = false,
         },
-    }, st.idx_info);
+    }, st.loop_info);
 }
 
 test "split_split" {
     const Ind = enum { i, j };
     const sst = comptime IterationSpace([16][8]f32, Ind).init().split(0, 4).split(0, 2);
     try std.testing.expect(@TypeOf(sst) == IterationSpace([2][2][4][8]f32, Ind));
-    try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
-        .orig_dim = 0,
+    try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
+        .idx_dim = 0,
         .block_size = 2,
         .num_blocks = 2,
         .vector = false,
+        .unrolled = false,
+        .parallel = false,
     }, .{
-        .orig_dim = 0,
+        .idx_dim = 0,
         .block_size = 4,
         .num_blocks = 2,
         .vector = false,
+        .unrolled = false,
+        .parallel = false,
     }, .{
-        .orig_dim = 0,
+        .idx_dim = 0,
         .block_size = 1,
         .num_blocks = 4,
         .vector = false,
+        .unrolled = false,
+        .parallel = false,
     }, .{
-        .orig_dim = 1,
+        .idx_dim = 1,
         .num_blocks = 8,
         .block_size = 1,
         .vector = false,
-    } }, sst.idx_info);
+        .unrolled = false,
+        .parallel = false,
+    } }, sst.loop_info);
 }
 
 test "vectorize" {
     const Ind = enum { i, j };
     const t = comptime IterationSpace([16][8]f32, Ind).init();
-    const vt = t.vectorize();
-    try std.testing.expect(@TypeOf(vt) == IterationSpace([16]@Vector(8, f32), Ind));
+    const vt = t.vectorize(1);
+    try std.testing.expect(@TypeOf(vt) == IterationSpace([16][8]f32, Ind));
 }
 
 test "split_vectorize" {
     const Ind = enum { i, j };
     const svt = comptime IterationSpace([16][8]f32, Ind).init()
         .split(0, 4)
-        .vectorize();
-    try std.testing.expect(@TypeOf(svt) == IterationSpace([4][4]@Vector(8, f32), Ind));
-    try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
-        .orig_dim = 0,
+        .vectorize(2);
+    try std.testing.expect(@TypeOf(svt) == IterationSpace([4][4][8]f32, Ind));
+    try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
+        .idx_dim = 0,
         .block_size = 4,
         .num_blocks = 4,
         .vector = false,
+        .unrolled = false,
+        .parallel = false,
     }, .{
-        .orig_dim = 0,
+        .idx_dim = 0,
         .block_size = 1,
         .num_blocks = 4,
         .vector = false,
+        .unrolled = false,
+        .parallel = false,
     }, .{
-        .orig_dim = 1,
+        .idx_dim = 1,
         .num_blocks = 1,
         .block_size = 8,
         .vector = true,
-    } }, svt.idx_info);
+        .unrolled = false,
+        .parallel = false,
+    } }, svt.loop_info);
 }
