@@ -4,7 +4,7 @@ const utils = @import("utils.zig");
 const func = @import("func.zig");
 const AllocatedBuffer = @import("buffer.zig").Buffer;
 
-pub fn IterationSpace(comptime Array: type) type {
+pub fn IterationSpace(comptime Array: type, comptime Indices: type) type {
     return struct {
         const Self = @This();
         pub const dtype: type = utils.Datatype(Array);
@@ -27,34 +27,19 @@ pub fn IterationSpace(comptime Array: type) type {
 
         iter_ndims: u8 = ndims,
         iter_shape: [ndims]usize = shape,
+        comptime Ind: type = Indices,
+        comptime Arr: type = Array,
 
-        idx_names: []const [:0]const u8,
         idx_ndims: u8,
         idx_info: *const [ndims]utils.IndexInfo = &default_idx_info,
 
         unrolled_dims: *const [ndims]bool = &(.{false} ** ndims),
         parallel_dims: *const [ndims]bool = &(.{false} ** ndims),
 
-        pub fn init(comptime idx_names: [ndims][:0]const u8) Self {
+        pub fn init() Self {
             return .{
                 .idx_ndims = ndims,
-                .idx_names = &idx_names,
             };
-        }
-
-        pub fn Indices(comptime self: Self) type {
-            const idx_ndims = self.idx_ndims;
-            var fields: [idx_ndims]std.builtin.Type.EnumField = undefined;
-            for (self.idx_names, 0..) |name, i| {
-                fields[i].name = name;
-                fields[i].value = @intCast(i);
-            }
-            return @Type(std.builtin.Type{ .Enum = .{
-                .decls = &.{},
-                .fields = &fields,
-                .is_exhaustive = true,
-                .tag_type = u8,
-            } });
         }
 
         fn Split(comptime dim: u8, comptime block_size: usize) type {
@@ -73,7 +58,7 @@ pub fn IterationSpace(comptime Array: type) type {
 
             const pre = shape[0..dim];
             const post = shape[dim + 1 .. ndims];
-            return IterationSpace(utils.ShapeToArray(dtype, ndims + 1, pre ++ .{ num_blocks, block_size } ++ post));
+            return IterationSpace(utils.ShapeToArray(dtype, ndims + 1, pre ++ .{ num_blocks, block_size } ++ post), Indices);
         }
 
         pub fn split(comptime b: *const Self, comptime dim: u8, comptime block_size: usize) Split(dim, block_size) {
@@ -99,7 +84,6 @@ pub fn IterationSpace(comptime Array: type) type {
 
             return .{
                 .idx_ndims = b.idx_ndims,
-                .idx_names = b.idx_names,
                 .idx_info = b.idx_info[0..dim] ++ .{ idx_info1, idx_info2 } ++ b.idx_info[dim + 1 .. ndims],
                 .unrolled_dims = b.unrolled_dims[0..dim] ++ .{false} ++ b.unrolled_dims[dim..ndims],
                 .parallel_dims = b.parallel_dims[0..dim] ++ .{false} ++ b.parallel_dims[dim..ndims],
@@ -178,11 +162,12 @@ pub fn IterationSpace(comptime Array: type) type {
 
         pub const Vec: type = @Vector(shape[ndims - 1], dtype);
         pub const Arr = Array;
+        pub const Ind = Indices;
 
         // By setting NonVectorized to void if it is already vectorized
         // the following function is removed from the namespace of this type
         const NonVectorized = if (Vectorized != void) Self else void;
-        pub fn vectorize(comptime b: *const NonVectorized) IterationSpace(Vectorized) {
+        pub fn vectorize(comptime b: *const NonVectorized) IterationSpace(Vectorized, Indices) {
             const new_idx_info = blk: {
                 var orig_info = b.idx_info.*;
                 const dim_int = ndims - 1;
@@ -193,7 +178,6 @@ pub fn IterationSpace(comptime Array: type) type {
             };
             return .{
                 .idx_info = &new_idx_info,
-                .idx_names = b.idx_names,
                 .idx_ndims = b.idx_ndims,
                 .unrolled_dims = b.unrolled_dims,
                 .parallel_dims = b.parallel_dims,
@@ -210,7 +194,6 @@ pub fn IterationSpace(comptime Array: type) type {
             return .{
                 .idx_info = b.idx_info,
                 .idx_ndims = b.idx_ndims,
-                .idx_names = b.idx_names,
                 .unrolled_dims = new_unrolled_dims,
                 .parallel_dims = b.parallel_dims,
             };
@@ -218,13 +201,12 @@ pub fn IterationSpace(comptime Array: type) type {
 
         fn Reorder(comptime new_order: [ndims]u8) type {
             const new_shape = utils.arrayPermute(usize, ndims, shape, new_order);
-            return IterationSpace(utils.ShapeToArray(dtype, ndims, &new_shape));
+            return IterationSpace(utils.ShapeToArray(dtype, ndims, &new_shape), Indices);
         }
         pub fn reorder(comptime b: *const Self, comptime new_order: [ndims]u8) Reorder(new_order) {
             return .{
                 .idx_info = &comptime utils.arrayPermute(utils.IndexInfo, ndims, b.idx_info.*, new_order),
                 .idx_ndims = b.idx_ndims,
-                .idx_names = b.idx_names,
                 .unrolled_dims = &comptime utils.arrayPermute(bool, ndims, b.unrolled_dims.*, new_order),
                 .parallel_dims = &comptime utils.arrayPermute(bool, ndims, b.parallel_dims.*, new_order),
             };
@@ -240,7 +222,6 @@ pub fn IterationSpace(comptime Array: type) type {
             return .{
                 .idx_info = b.idx_info,
                 .idx_ndims = b.idx_ndims,
-                .idx_names = b.idx_names,
                 .unrolled_dims = b.unrolled_dims,
                 .parallel_dims = new_parallel_dims,
             };
@@ -249,21 +230,24 @@ pub fn IterationSpace(comptime Array: type) type {
         pub fn nest(
             comptime self: Self,
             comptime Args: type,
-            comptime iter_logic: func.Logic(Args, self.Indices()),
+            comptime iter_logic: func.Logic(Args, Indices),
         ) loop.Nest(Args, self) {
+            std.debug.assert(std.meta.activeTag(@typeInfo(Indices)) == .Enum and @typeInfo(Indices).Enum.fields.len == self.idx_ndims);
             return loop.Nest(Args, self).init(iter_logic);
         }
     };
 }
 
 test "tile" {
-    const tiled = comptime IterationSpace([32][16][8]f32).init(.{ "i", "j", "k" }).tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
-    try std.testing.expectEqual(@TypeOf(tiled), IterationSpace([32][2][2][8][4]f32));
+    const Ind = enum { i, j, k };
+    const tiled = comptime IterationSpace([32][16][8]f32, Ind).init().tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
+    try std.testing.expectEqual(@TypeOf(tiled), IterationSpace([32][2][2][8][4]f32, Ind));
 }
 
 test "split" {
-    const st = comptime IterationSpace([16][8]f32).init(.{ "i", "j" }).split(0, 4);
-    try std.testing.expect(@TypeOf(st) == IterationSpace([4][4][8]f32));
+    const Ind = enum { i, j };
+    const st = comptime IterationSpace([16][8]f32, Ind).init().split(0, 4);
+    try std.testing.expect(@TypeOf(st) == IterationSpace([4][4][8]f32, Ind));
     try std.testing.expectEqualSlices(utils.IndexInfo, &.{
         .{
             .orig_dim = 0,
@@ -287,8 +271,9 @@ test "split" {
 }
 
 test "split_split" {
-    const sst = comptime IterationSpace([16][8]f32).init(.{ "i", "j" }).split(0, 4).split(0, 2);
-    try std.testing.expect(@TypeOf(sst) == IterationSpace([2][2][4][8]f32));
+    const Ind = enum { i, j };
+    const sst = comptime IterationSpace([16][8]f32, Ind).init().split(0, 4).split(0, 2);
+    try std.testing.expect(@TypeOf(sst) == IterationSpace([2][2][4][8]f32, Ind));
     try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
         .orig_dim = 0,
         .block_size = 2,
@@ -313,16 +298,18 @@ test "split_split" {
 }
 
 test "vectorize" {
-    const t = comptime IterationSpace([16][8]f32).init(.{ "i", "j" });
+    const Ind = enum { i, j };
+    const t = comptime IterationSpace([16][8]f32, Ind).init();
     const vt = t.vectorize();
-    try std.testing.expect(@TypeOf(vt) == IterationSpace([16]@Vector(8, f32)));
+    try std.testing.expect(@TypeOf(vt) == IterationSpace([16]@Vector(8, f32), Ind));
 }
 
 test "split_vectorize" {
-    const svt = comptime IterationSpace([16][8]f32).init(.{ "i", "j" })
+    const Ind = enum { i, j };
+    const svt = comptime IterationSpace([16][8]f32, Ind).init()
         .split(0, 4)
         .vectorize();
-    try std.testing.expect(@TypeOf(svt) == IterationSpace([4][4]@Vector(8, f32)));
+    try std.testing.expect(@TypeOf(svt) == IterationSpace([4][4]@Vector(8, f32), Ind));
     try std.testing.expectEqualSlices(utils.IndexInfo, &.{ .{
         .orig_dim = 0,
         .block_size = 4,

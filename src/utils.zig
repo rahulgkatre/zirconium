@@ -20,8 +20,8 @@ pub fn ShapeToArray(comptime dtype: type, comptime ndims: u8, comptime shape: *c
 pub fn Datatype(comptime Array: type) type {
     switch (@typeInfo(Array)) {
         .Vector => |info| return info.child,
-        .Pointer => |info| if (info.size == .Many) return IterationSpace(info.child).dtype,
-        .Array => |info| return IterationSpace(info.child).dtype,
+        .Pointer => |info| if (info.size == .Many) return Datatype(info.child),
+        .Array => |info| return Datatype(info.child),
         .Int, .Float, .Bool => return Array,
         else => {},
     }
@@ -30,8 +30,8 @@ pub fn Datatype(comptime Array: type) type {
 
 pub fn extractNdims(comptime Array: type) u8 {
     switch (@typeInfo(Array)) {
-        .Pointer => |info| if (info.size == .Many) return 1 + IterationSpace(info.child).ndims,
-        .Array => |info| return 1 + IterationSpace(info.child).ndims,
+        .Pointer => |info| if (info.size == .Many) return 1 + extractNdims(info.child),
+        .Array => |info| return 1 + extractNdims(info.child),
         .Int, .Float, .Bool => return 0,
         .Vector => return 1,
         else => {},

@@ -3,18 +3,13 @@ const loop = @import("loop.zig");
 const iterspace = @import("iterspace.zig");
 const utils = @import("utils.zig");
 
-pub fn Buffer(comptime Array: type) type {
-    return IterSpaceBuffer(Array, null);
+pub fn Buffer(comptime Array: type, comptime Indices: type) type {
+    const iter_space = iterspace.IterationSpace(Array, Indices).init();
+    return IterSpaceBuffer(Array, iter_space);
 }
 
-pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) type {
-    var default_idx_names: [utils.extractNdims(Array)][:0]const u8 = undefined;
-    for (0..default_idx_names.len) |dim| {
-        default_idx_names[dim] = std.fmt.comptimePrint("dim{d}", .{dim});
-    }
-    const IterSpace = if (@TypeOf(raw_iter_space) == @TypeOf(null)) iterspace.IterationSpace(Array) else iterspace.IterationSpace(@TypeOf(raw_iter_space).Arr);
-    const iter_space: IterSpace = if (@TypeOf(raw_iter_space) == @TypeOf(null)) iterspace.IterationSpace(Array).init(default_idx_names) else @as(*const IterSpace, @ptrCast(&raw_iter_space)).*;
-
+pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type {
+    const iter_space: iterspace.IterationSpace(_iter_space.Arr, _iter_space.Ind) = _iter_space;
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
@@ -63,7 +58,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
         };
 
         pub fn init(slice: []align(CACHE_LINE) dtype) IterSpaceBuffer(Arr, iter_space) {
-            return Buffer(Arr){
+            return IterSpaceBuffer(Arr, iter_space){
                 .layout = .{
                     .ndims = ndims,
                     .shape = &shape,
@@ -108,7 +103,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
         /// e.g. if accessing a vectorized index, Unit should be a vector
         pub inline fn load(
             b: Self,
-            comptime indices: [ndims]iter_space.Indices(),
+            /// Specify which indices of the iteration space will be used to index into the array
+            comptime indices: [ndims]iter_space.Ind,
             idx: [iter_space.idx_ndims]usize,
         ) Unit {
             var selected: [ndims]usize = undefined;
@@ -130,7 +126,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
 
         pub inline fn store(
             b: Self,
-            comptime indices: [ndims]iter_space.Indices(),
+            comptime indices: [ndims]iter_space.Ind,
             val: Unit,
             idx: [iter_space.idx_ndims]usize,
         ) void {
@@ -155,7 +151,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime raw_iter_space: anytype) t
 
 test "init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    var d = try Buffer([16][8]f32).alloc(arena.allocator());
+    var d = try Buffer([16][8]f32, enum { i, j }).alloc(arena.allocator());
     defer arena.deinit();
 
     try std.testing.expect(@intFromPtr(&@as(*const [16][8]f32, @ptrCast(d.data))[0][0]) == @intFromPtr(&d.data[0]));

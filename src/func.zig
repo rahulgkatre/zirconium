@@ -64,7 +64,7 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
 
     if (Args != void) {
         for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *IterSpaceBuffer(field.type, null) };
+            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type, Indices) };
             i += 1;
         }
     }

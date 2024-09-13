@@ -101,7 +101,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
         }
 
         pub fn init(
-            comptime iter_logic: func.Logic(Args, iter_space.Indices()),
+            comptime iter_logic: func.Logic(Args, iter_space.Ind),
         ) @This() {
             if (iter_space.iter_ndims == 0) {
                 @compileError("cannot generate loop nest for 0 dimensional iteration space");
@@ -166,20 +166,20 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
     };
 }
 
-const test_iter_space = IterationSpace([16][8]bool).init(.{ "dim0", "dim1" });
+const TestIndices = enum { i, j };
+
+const test_iter_space = IterationSpace([16][8]bool, TestIndices).init();
 const B = [16][8]bool;
 const TestArgs = struct {
     b: B,
 };
 
-const TestIndices = test_iter_space.Indices();
-
 const test_logic: func.Logic(TestArgs, TestIndices) = struct {
     // for gpu execution inline this function into a surrounding GPU kernel.
     // Unraveling method would require to be bound to GPU thread / group ids
-    inline fn iter_logic(b: *Buffer(B), idx: [2]usize) void {
-        std.testing.expectEqual(b.constant(false), b.load(.{ .dim0, .dim1 }, idx)) catch unreachable;
-        b.store(.{ .dim0, .dim1 }, b.constant(true), idx);
+    inline fn iter_logic(b: *Buffer(B, TestIndices), idx: [2]usize) void {
+        std.testing.expectEqual(b.constant(false), b.load(.{ .i, .j }, idx)) catch unreachable;
+        b.store(.{ .i, .j }, b.constant(true), idx);
     }
 }.iter_logic;
 
@@ -218,7 +218,7 @@ test "nest" {
 
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
 
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
@@ -261,7 +261,7 @@ test "unroll nest" {
 
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
@@ -303,7 +303,7 @@ test "vector nest" {
 
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
@@ -344,7 +344,7 @@ test "reorder nest" {
 
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
@@ -386,7 +386,7 @@ test "parallel nest" {
 
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
 
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
@@ -399,7 +399,7 @@ test "split split vector nest" {
         .split(1, 4)
         .split(0, 4)
         .vectorize();
-    try comptime std.testing.expectEqual(@TypeOf(ssv), IterationSpace([4][4][2]@Vector(4, bool)));
+    try comptime std.testing.expectEqual(@TypeOf(ssv), IterationSpace([4][4][2]@Vector(4, bool), TestIndices));
 
     const nest = comptime ssv.nest(TestArgs, test_logic);
     const expected = comptime Nest(TestArgs, ssv).Loop{
@@ -456,7 +456,7 @@ test "split split vector nest" {
         },
     };
     try comptime std.testing.expectEqualDeep(expected, nest.body[0]);
-    var b = try Buffer(B).alloc(arena.allocator());
+    var b = try Buffer(B, TestIndices).alloc(arena.allocator());
     nest.eval(.{}, .{&b});
     try std.testing.expectEqualSlices(bool, &(.{true} ** 128), b.data[0..128]);
 }
