@@ -13,7 +13,7 @@ const SIMD_SIZE = 8;
 
 const Indices = enum { i, j, k };
 
-const iter_space = zirconium.iterspace
+const iter_space = zirconium.IterSpace
     .init(.{ M, N, P }, Indices)
     .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
