@@ -2,7 +2,7 @@ const zirconium = @import("zirconium.zig");
 
 const M = 1024;
 const N = 1024;
-const P = 512;
+const P = 1024;
 
 const A = [M][P]f32;
 const B = [N][P]f32;
@@ -17,6 +17,7 @@ const iter_space = zirconium.IterationSpace([M][N][P]f32, Indices)
     .init()
     .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
+    .parallel(1)
     .vectorize();
 
 const Args = struct {
