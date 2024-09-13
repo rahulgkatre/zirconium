@@ -4,7 +4,7 @@ Zirconium is an embedded domain specific language (eDSL) for defining nested loo
 
 This is done through the power of `comptime` in Zig, where loop parameters and transforms are defined in comptime and stored in datastructures. Evaluation / execution resolves comptime values as constants, allowing for zero overhead execution. To validate this, try building with `-OReleaseSmall` on loop code and export the assembly.
 
-This library is to be interfaced with [Tesseract](https://github.com/rahulgkatre/tesseract) and be used as an intermediate representation for compiling tensor graphs. 
+This library is to be interfaced with [Tesseract](https://github.com/rahulgkatre/tesseract) and be used as an compilation target for tensor compute graphs. 
 
 Check out `demo.zig` to see how it works. 
 
@@ -23,29 +23,39 @@ Check out `demo.zig` to see how it works.
 
 ### Minimal Dependencies
 
-- Minimize compile dependencies by only using the Zig compiler (as the language develops, use it more)
-- Minimize executable dependencies (including standard library)
+- Minimize compile dependencies by only using the Zig compiler
+- Minimize executable dependencies
 
 ## Roadmap
 
-### Minimum Feature Checklist
+### Feature Checklist
 
 - Basic loop transforms
     - [x] Split
     - [x] Vectorize
     - [x] Unroll
     - [x] Reorder
+    - [x] Parallellize
     - [ ] Skew
 - Advanced transforms
-    - [ ] Loop fusion
-    - [ ] Tensorization
-    - [ ] GPU kernelization
+    - [ ] Caching (must support different memory banks)
+    - [ ] Fusion
+    - [ ] Tensorize (using tensor intrinsics)
+    - [ ] GPU kernel generation (using https://github.com/ziglang/zig/pull/21030)
+    - [ ] Distributed compute (MPI? Multiple GPU?)
 - Other
-    - [ ] Runtime-known loop sizes
+    - [ ] Runtime loop bounds
 
 ### Future goals
 
 - Autotuning
     - Find different options for optimization that result in the highest performance based on some input types
+    - Can this be done in a `build.zig` file?
+        - Generate a iteration space parameters file
+        - Embed file in code, parse into iteration space transforms
+        - Compile, run
+        - Modify file
+        - Repeat 2-4
 - Polyhedral compilation
     - Automatically calculate transforms using polyhedral compilation techniques
+    - Similar to above idea, except run something like `isl` on the iteration space parameters. 

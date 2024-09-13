@@ -4,11 +4,12 @@ const IterationSpace = @import("iterspace.zig").IterationSpace;
 pub const LoopInfo = struct {
     idx_min: usize = 0,
     idx_dim: u8,
-    num_blocks: usize,
-    block_size: usize,
-    vector: bool,
-    unrolled: bool,
-    parallel: bool,
+    // making this optional in anticipation of runtime shapes
+    num_blocks: ?usize,
+    block_size: usize = 1,
+    vector: bool = false,
+    unrolled: bool = false,
+    parallel: bool = false,
     gpu: bool = false,
 };
 

@@ -4,19 +4,14 @@ const iterspace = @import("iterspace.zig");
 const utils = @import("utils.zig");
 
 pub fn Buffer(comptime Array: type, comptime Indices: type) type {
-    const iter_space = iterspace.IterationSpace(Array, Indices).init();
+    const iter_space = iterspace.init(utils.extractShape(Array), Indices);
     return IterSpaceBuffer(Array, iter_space);
 }
 
-pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type {
-    const iter_space: iterspace.IterationSpace(_iter_space.Arr, _iter_space.Ind) = _iter_space;
+pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: iterspace) type {
     return struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
-
-        const Tile = @Vector(iter_space.shape[iter_space.ndims - 1], dtype);
-
-        const TILE_ALIGN = @alignOf(Tile);
 
         pub const dtype = utils.Datatype(Array);
         const ndims = utils.extractNdims(Array);
@@ -61,9 +56,6 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
                     .ndims = ndims,
                     .shape = &shape,
                     .strides = &contiguous_strides,
-                    // .skew = &(.{0} ** ndims),
-                    // .unrolled = &(.{false} ** ndims),
-                    // .parallelized = &(.{false} ** ndims),
                 },
                 .data = @alignCast(@ptrCast(slice)),
             };
@@ -80,8 +72,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
             return init(slice);
         }
 
-        pub fn constant(_: Self, comptime indices: [ndims]iter_space.Ind, val: dtype) StoredData(indices) {
-            if (StoredData(indices) == dtype) {
+        pub fn constant(_: Self, comptime indices: [ndims]iter_space.Indices, val: dtype) BlockData(indices) {
+            if (BlockData(indices) == dtype) {
                 return val;
             } else {
                 return @splat(val);
@@ -97,7 +89,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
             return i;
         }
 
-        fn StoredData(comptime indices: [ndims]iter_space.Ind) type {
+        fn BlockData(comptime indices: [ndims]iter_space.Indices) type {
             for (indices, 0..) |ind, d| {
                 const dim = @intFromEnum(ind);
                 for (iter_space.loop_info) |loop_info| {
@@ -114,18 +106,18 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
         pub inline fn load(
             b: Self,
             /// Specify which indices of the iteration space will be used to index into the array
-            comptime indices: [ndims]iter_space.Ind,
+            comptime indices: [ndims]iter_space.Indices,
             idx: [iter_space.idx_ndims]usize,
-        ) StoredData(indices) {
+        ) BlockData(indices) {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(StoredData(indices))) {
+            switch (@typeInfo(BlockData(indices))) {
                 .Vector => |info| {
                     const len = info.len;
-                    // TODO: Confirm assembly still has vmovaps
-                    return b.data[b.unravel(selected)..][0..len].*;
+                    const ptr: *const BlockData(indices) align(@alignOf(BlockData(indices))) = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
+                    return ptr.*;
                 },
                 .Array => |_| {
                     @compileError("Multidimensional tiles (e.g. for WMMA) not yet supported");
@@ -137,21 +129,21 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime _iter_space: anytype) type
 
         pub inline fn store(
             b: Self,
-            comptime indices: [ndims]iter_space.Ind,
+            comptime indices: [ndims]iter_space.Indices,
             // idea; make val anytype, store reduction dimension info in idx type along with reduction op
             // if val is a vector, reduce it with the op, otherwise proceed with storing the val directly
             // if both are vectors, no reduction is needed
-            val: StoredData(indices),
+            val: BlockData(indices),
             idx: [iter_space.idx_ndims]usize,
         ) void {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
                 selected[d] = idx[@intFromEnum(ind)];
             }
-            switch (@typeInfo(StoredData(indices))) {
+            switch (@typeInfo(BlockData(indices))) {
                 .Vector => |info| {
                     const len = info.len;
-                    const dst: *[len]dtype = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
+                    const dst: *[len]dtype align(@alignOf([len]dtype)) = @alignCast(@ptrCast(b.data[b.unravel(selected)..][0..len]));
                     dst.* = val;
                 },
                 .Array => |_| {

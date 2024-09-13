@@ -13,8 +13,8 @@ const SIMD_SIZE = 8;
 
 const Indices = enum { i, j, k };
 
-const iter_space = zirconium.IterationSpace([M][N][P]f32, Indices)
-    .init()
+const iter_space = zirconium.iterspace
+    .init(.{ M, N, P }, Indices)
     .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
     .split(4, SIMD_SIZE)
     .parallel(1)
@@ -45,6 +45,7 @@ const nest = iter_space.nest(Args, matmul_logic);
 pub fn main() !void {
     // @compileLog(@TypeOf(iter_space));
     // TODO: Need to support vectorized reduction
+    // by specifying a reduction dimension in the iterspace, and a reduce op to apply
     const std = @import("std");
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

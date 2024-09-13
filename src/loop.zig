@@ -3,26 +3,25 @@ const utils = @import("utils.zig");
 const func = @import("func.zig");
 
 const buffer = @import("buffer.zig");
-const IterationSpace = @import("iterspace.zig").IterationSpace;
+const iterspace = @import("iterspace.zig");
 
 pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
     return struct {
         const idx_ndims = iter_space.idx_ndims;
         const CurrentNest = @This();
 
-        fn buildLogic(comptime iter_logic: func.Logic(Args, iter_space.Ind)) EvalItem {
+        fn buildLogic(comptime iter_logic: func.Logic(Args, iter_space.Indices)) EvalItem {
             return .{
                 .eval = struct {
-                    const IterSpaceLogic: type = func.IterSpaceLogic(Args, iter_space);
-                    const iter_space_logic = @as(*const IterSpaceLogic, @ptrCast(&iter_logic));
-                    /// Explanation of what is going on here:
+                    const NarrowedLogic: type = func.IterSpaceLogic(Args, iter_space);
+                    const narrowed_logic = @as(*const NarrowedLogic, @ptrCast(&iter_logic));
                     /// Buffers are initially created with a default iter_space in the type, corresponding to the array type,
                     /// not the one that has been transformed by the programmer.
                     /// Both buffers are identical but the additional type information from the iter_space being used will change
-                    /// This will allow the usage of the indices enum to correctly identify vector loads and stores
+                    /// Casting will allow the usage of the indices enum to correctly identify vector loads and stores
                     inline fn wrapped_iter_logic(args: anytype, idx: [idx_ndims]usize) void {
-                        const iter_space_logic_args = @as(*const std.meta.ArgsTuple(IterSpaceLogic), @ptrCast(&(args ++ .{idx}))).*;
-                        @call(.always_inline, iter_space_logic, iter_space_logic_args);
+                        const narrowed_logic_args = @as(*const std.meta.ArgsTuple(NarrowedLogic), @ptrCast(&(args ++ .{idx}))).*;
+                        @call(.always_inline, narrowed_logic, narrowed_logic_args);
                     }
                 }.wrapped_iter_logic,
             };
@@ -35,12 +34,12 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
                     inline fn eval(args: anytype, base_idx: [idx_ndims]usize) void {
                         var idx = base_idx;
                         const base_for_dim = base_idx[loop_info.idx_dim];
-                        var threads: [loop_info.num_blocks]std.Thread = undefined;
+                        var threads: [loop_info.num_blocks orelse 4]std.Thread = undefined;
                         inline for (body) |item| {
                             if (comptime loop_info.unrolled) {
                                 comptime var unroll_loopvar = loop_info.idx_min;
                                 comptime var i = 0;
-                                inline while (i < loop_info.num_blocks) : ({
+                                inline while (i < loop_info.num_blocks.?) : ({
                                     unroll_loopvar += loop_info.block_size;
                                     idx[loop_info.idx_dim] = base_for_dim + unroll_loopvar;
                                     i += 1;
@@ -54,7 +53,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
                             } else {
                                 var loopvar = loop_info.idx_min;
                                 var i: usize = 0;
-                                while (i < loop_info.num_blocks) : ({
+                                while (i < loop_info.num_blocks.?) : ({
                                     loopvar += loop_info.block_size;
                                     idx[loop_info.idx_dim] = base_for_dim + loopvar;
                                     i += 1;
@@ -84,22 +83,19 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
         body: []const EvalItem,
 
         pub fn init(
-            comptime iter_logic: func.Logic(Args, iter_space.Ind),
+            comptime iter_logic: func.Logic(Args, iter_space.Indices),
         ) @This() {
-            if (iter_space.ndims == 0) {
+            if (iter_space.ndims() == 0) {
                 @compileError("cannot generate loop nest for 0 dimensional iteration space");
             }
-
-            const body: []const EvalItem = comptime blk: {
-                var body: []const EvalItem = &.{buildLogic(iter_logic)};
-                for (0..iter_space.ndims) |dim| {
-                    body = &.{buildLoop(iter_space.ndims - dim - 1, body)};
-                }
-                break :blk &.{body[0]};
-            };
-
             return .{
-                .body = body,
+                .body = comptime blk: {
+                    var body: []const EvalItem = &.{buildLogic(iter_logic)};
+                    for (0..iter_space.ndims()) |dim| {
+                        body = &.{buildLoop(iter_space.ndims() - dim - 1, body)};
+                    }
+                    break :blk &.{body[0]};
+                },
             };
         }
 
@@ -139,7 +135,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: anytype) type {
 
 const TestIndices = enum { i, j };
 
-const test_iter_space = IterationSpace([16][8]bool, TestIndices).init();
+const test_iter_space = iterspace.init(.{ 16, 8 }, TestIndices);
 const B = [16][8]bool;
 const TestArgs = struct {
     b: B,
@@ -162,17 +158,9 @@ test "nest" {
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .num_blocks = 16,
         .idx_dim = 0,
-        .vector = false,
-        .block_size = 1,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .num_blocks = 8,
         .idx_dim = 1,
-        .vector = false,
-        .block_size = 1,
-        .unrolled = false,
-        .parallel = false,
     } }, test_iter_space.loop_info);
     var b = try nest.alloc(B, arena.allocator());
 
@@ -227,18 +215,11 @@ test "unroll nest" {
         .{
             .num_blocks = 16,
             .idx_dim = 0,
-            .vector = false,
-            .block_size = 1,
-            .unrolled = false,
-            .parallel = false,
         },
         .{
             .num_blocks = 8,
             .idx_dim = 1,
-            .vector = false,
-            .block_size = 1,
             .unrolled = true,
-            .parallel = false,
         },
     }, unrolled_iter_space.loop_info);
 
@@ -252,7 +233,6 @@ test "vector nest" {
     defer arena.deinit();
 
     const vectorized_iter_space = comptime test_iter_space.vectorize(1);
-    try std.testing.expect(@TypeOf(vectorized_iter_space).Vec == @Vector(8, bool));
     const nest = comptime vectorized_iter_space.nest(TestArgs, test_logic);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .block_size = 1,
@@ -284,17 +264,9 @@ test "reorder nest" {
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .num_blocks = 8,
         .idx_dim = 1,
-        .vector = false,
-        .block_size = 1,
-        .unrolled = false,
-        .parallel = false,
     }, .{
-        .block_size = 1,
         .num_blocks = 16,
         .idx_dim = 0,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     } }, reordered_iter_space.loop_info);
 
     var b = try nest.alloc(B, arena.allocator());
@@ -311,16 +283,11 @@ test "parallel nest" {
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .block_size = 1,
         .num_blocks = 16,
-        .vector = false,
         .idx_dim = 0,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .num_blocks = 8,
         .idx_dim = 1,
         .block_size = 1,
-        .vector = false,
-        .unrolled = false,
         .parallel = true,
     } }, parallel_iter_space.loop_info);
 
@@ -337,7 +304,6 @@ test "split split vector nest" {
         .split(1, 4)
         .split(0, 4)
         .vectorize(3);
-    try comptime std.testing.expectEqual(@TypeOf(transformed_iter_space), IterationSpace([4][4][2][4]bool, TestIndices));
 
     const nest = comptime transformed_iter_space.nest(TestArgs, test_logic);
     // const expected = comptime Nest(TestArgs, ssv).Loop{
@@ -347,33 +313,21 @@ test "split split vector nest" {
             .num_blocks = 4,
             .block_size = 4,
             .idx_dim = 0,
-            .vector = false,
-            .unrolled = false,
-            .parallel = false,
         },
         .{
             .num_blocks = 4,
-            .block_size = 1,
             .idx_dim = 0,
-            .vector = false,
-            .unrolled = false,
-            .parallel = false,
         },
         .{
             .num_blocks = 2,
             .block_size = 4,
             .idx_dim = 1,
-            .vector = false,
-            .unrolled = false,
-            .parallel = false,
         },
         .{
             .num_blocks = 1,
             .block_size = 4,
             .idx_dim = 1,
             .vector = true,
-            .unrolled = false,
-            .parallel = false,
         },
     }, transformed_iter_space.loop_info);
     var b = try nest.alloc(B, arena.allocator());
