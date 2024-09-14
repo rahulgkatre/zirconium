@@ -140,16 +140,11 @@ pub fn ExternFnArgs(comptime Args: type, comptime iter_space: IterSpace) type {
 /// The iteration space and indices define memory access patterns.
 pub fn ExternFn(comptime Args: type, comptime iter_space: IterSpace) type {
     if (Args != void) validateArgsType(Args);
-    const params: [2]std.builtin.Type.Fn.Param = .{
+    const params: [1]std.builtin.Type.Fn.Param = .{
         .{
             .is_generic = false,
             .is_noalias = false,
             .type = ExternFnArgs(Args, iter_space),
-        },
-        .{
-            .is_generic = false,
-            .is_noalias = false,
-            .type = [iter_space.numIndices()]usize,
         },
     };
     return @Type(.{ .Fn = .{

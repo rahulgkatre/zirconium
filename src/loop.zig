@@ -98,9 +98,9 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
             };
         }
 
-        pub fn build(comptime nest: *const @This()) fn (func.ExternFnArgs(Args, iter_space)) void {
+        pub fn build(comptime nest: *const @This()) func.ExternFn(Args, iter_space) {
             return comptime struct {
-                fn eval(args: func.ExternFnArgs(Args, iter_space)) void {
+                fn eval(args: func.ExternFnArgs(Args, iter_space)) callconv(.C) void {
                     const idx: [idx_ndims]usize = .{0} ** idx_ndims;
                     var auto_args: func.IterSpaceLogicArgs(Args, iter_space) = undefined;
                     inline for (comptime std.meta.fieldNames(Args)) |field_name| {
