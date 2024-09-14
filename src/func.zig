@@ -1,5 +1,6 @@
 const std = @import("std");
 const utils = @import("utils.zig");
+const IterSpace = @import("IterSpace.zig");
 const Buffer = @import("buffer.zig").Buffer;
 const IterSpaceBuffer = @import("buffer.zig").IterSpaceBuffer;
 
@@ -12,45 +13,28 @@ fn validateArgsType(comptime Type: type) void {
     }
 }
 
-pub fn externFnParams(comptime Args: type) []std.builtin.Type.Fn.Param {
-    if (Args != void) validateArgsType(Args);
+pub fn LogicArgs(comptime Args: type, comptime Indices: type) type {
+    var fields: [@typeInfo(Args).Struct.fields.len]std.builtin.Type.StructField = undefined;
 
-    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0);
-    var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-    var i = 0;
-    // var fields: [nparams]std.builtin.Type.StructField = undefined;
-    if (Args != void) {
-        for (@typeInfo(Args).Struct.fields) |field| {
-            const Type = Buffer(field.type);
-            // const alignment: usize = Type.alignment;
-            // fields[i] = std.builtin.Type.StructField{
-            //     .alignment = alignment,
-            //     .type = std.meta.FieldType(Type, .data),
-            //     .name = field.name,
-            // };
-            params[i] = std.builtin.Type.Fn.Param{
-                .type = std.meta.FieldType(Type, .data),
-            };
-            i += 1;
-        }
+    for (@typeInfo(Args).Struct.fields, 0..) |field, i| {
+        const Type = Buffer(field.type, Indices);
+        fields[i] = std.builtin.Type.StructField{
+            .alignment = @alignOf(Type),
+            .is_comptime = false,
+            .default_value = null,
+            .name = field.name,
+            .type = Type,
+        };
     }
-    // const argType: type = @Type(std.builtin.Type{ .Struct = .{
-    //     .fields = &fields,
-    //     .decls = &.{},
-    //     .layout = .@"extern",
-    // } });
-    // params[0] = .{ .is_generic = false, .is_noalias = false, .type = argType };
-    return &params;
-}
 
-pub fn ExternFn(comptime Args: type) type {
-    return @Type(.{ .Fn = .{
-        .calling_convention = std.builtin.CallingConvention.C,
-        .is_generic = false,
-        .is_var_args = false,
-        .params = externFnParams(Args),
-        .return_type = void,
-    } });
+    return @Type(.{
+        .Struct = std.builtin.Type.Struct{
+            .decls = &.{},
+            .fields = &fields,
+            .is_tuple = false,
+            .layout = .auto,
+        },
+    });
 }
 
 /// When defining loop logic, use this type.
@@ -58,20 +42,17 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
     const idx_ndims = @typeInfo(Indices).Enum.fields.len;
     if (Args != void) validateArgsType(Args);
 
-    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
-    var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-    var i = 0;
-
-    if (Args != void) {
-        for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *Buffer(field.type, Indices) };
-            i += 1;
-        }
-    }
-    params[i] = .{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = [idx_ndims]usize,
+    const params: [2]std.builtin.Type.Fn.Param = .{
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = LogicArgs(Args, Indices),
+        },
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = [idx_ndims]usize,
+        },
     };
     return @Type(.{ .Fn = .{
         .calling_convention = std.builtin.CallingConvention.Inline,
@@ -80,27 +61,47 @@ pub fn Logic(comptime Args: type, comptime Indices: type) type {
         .params = &params,
         .return_type = void,
     } });
+}
+
+pub fn IterSpaceLogicArgs(comptime Args: type, comptime iter_space: IterSpace) type {
+    var fields: [@typeInfo(Args).Struct.fields.len]std.builtin.Type.StructField = undefined;
+
+    for (@typeInfo(Args).Struct.fields, 0..) |field, i| {
+        const Type = IterSpaceBuffer(field.type, iter_space);
+        fields[i] = std.builtin.Type.StructField{
+            .alignment = @alignOf(Type),
+            .is_comptime = false,
+            .default_value = null,
+            .name = field.name,
+            .type = Type,
+        };
+    }
+
+    return @Type(.{
+        .Struct = std.builtin.Type.Struct{
+            .decls = &.{},
+            .fields = &fields,
+            .is_tuple = false,
+            .layout = .auto,
+        },
+    });
 }
 
 /// This type is used to specify the iteration space a buffer will be accessed through.
 /// The iteration space and indices define memory access patterns.
-pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: anytype) type {
+pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: IterSpace) type {
     if (Args != void) validateArgsType(Args);
-
-    const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
-    var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-    var i = 0;
-
-    if (Args != void) {
-        for (@typeInfo(Args).Struct.fields) |field| {
-            params[i] = .{ .is_generic = false, .is_noalias = false, .type = *IterSpaceBuffer(field.type, iter_space) };
-            i += 1;
-        }
-    }
-    params[i] = .{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = [iter_space.idx_ndims]usize,
+    const params: [2]std.builtin.Type.Fn.Param = .{
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = IterSpaceLogicArgs(Args, iter_space),
+        },
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = [iter_space.numIndices()]usize,
+        },
     };
     return @Type(.{ .Fn = .{
         .calling_convention = std.builtin.CallingConvention.Inline,
@@ -111,30 +112,51 @@ pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: anytype) type {
     } });
 }
 
-// pub fn VectorizedLogic(comptime Args: type, comptime iter_space: anytype) type {
-//     const vec_len = iter_space.shape[]
-//     if (Args != void) validateArgsType(Args);
+pub fn ExternFnArgs(comptime Args: type, comptime iter_space: IterSpace) type {
+    var fields: [@typeInfo(Args).Struct.fields.len]std.builtin.Type.StructField = undefined;
 
-//     const nparams = (if (Args != void) @typeInfo(Args).Struct.fields.len else 0) + 1;
-//     var params: [nparams]std.builtin.Type.Fn.Param = undefined;
-//     var i = 0;
+    for (@typeInfo(Args).Struct.fields, 0..) |field, i| {
+        const Type = IterSpaceBuffer(field.type, iter_space);
+        fields[i] = std.builtin.Type.StructField{
+            .alignment = @alignOf(Type),
+            .is_comptime = false,
+            .default_value = null,
+            .name = field.name,
+            .type = Type,
+        };
+    }
 
-//     if (Args != void) {
-//         for (@typeInfo(Args).Struct.fields) |field| {
-//             params[i] = .{ .is_generic = false, .is_noalias = false, .type = *TiledBuffer(field.type, @Vector(vec_len, utils.Datatype(field.type))) };
-//             i += 1;
-//         }
-//     }
-//     params[i] = .{
-//         .is_generic = false,
-//         .is_noalias = false,
-//         .type = [idx_ndims]usize,
-//     };
-//     return @Type(.{ .Fn = .{
-//         .calling_convention = std.builtin.CallingConvention.Inline,
-//         .is_generic = false,
-//         .is_var_args = false,
-//         .params = &params,
-//         .return_type = void,
-//     } });
-// }
+    return @Type(.{
+        .Struct = std.builtin.Type.Struct{
+            .decls = &.{},
+            .fields = &fields,
+            .is_tuple = false,
+            .layout = .@"extern",
+        },
+    });
+}
+
+/// This type is used to specify the iteration space a buffer will be accessed through.
+/// The iteration space and indices define memory access patterns.
+pub fn ExternFn(comptime Args: type, comptime iter_space: IterSpace) type {
+    if (Args != void) validateArgsType(Args);
+    const params: [2]std.builtin.Type.Fn.Param = .{
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = ExternFnArgs(Args, iter_space),
+        },
+        .{
+            .is_generic = false,
+            .is_noalias = false,
+            .type = [iter_space.numIndices()]usize,
+        },
+    };
+    return @Type(.{ .Fn = .{
+        .calling_convention = std.builtin.CallingConvention.C,
+        .is_generic = false,
+        .is_var_args = false,
+        .params = &params,
+        .return_type = void,
+    } });
+}

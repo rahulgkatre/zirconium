@@ -90,13 +90,6 @@ pub fn Vectorized(comptime Array: type) type {
     @compileError("cannot vectorize a buffer that is already vectorized");
 }
 
-pub const Layout = struct {
-    ndims: u8,
-    shape: []const usize,
-    strides: []const usize,
-    offest: usize = 0,
-};
-
 pub fn arrayPermute(comptime T: type, comptime len: u8, array: [len]T, comptime perm: [len]u8) [len]T {
     var used: [len]bool = [_]bool{false} ** len;
     for (perm) |p| {

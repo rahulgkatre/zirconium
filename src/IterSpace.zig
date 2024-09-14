@@ -7,13 +7,15 @@ const AllocatedBuffer = @import("buffer.zig").Buffer;
 const IterSpace = @This();
 
 Indices: type,
-// Arr: type,
-
-idx_ndims: u8,
+Shape: type,
 loop_info: []const utils.LoopInfo,
 
 pub inline fn ndims(is: *const IterSpace) u8 {
     return is.loop_info.len;
+}
+
+pub inline fn numIndices(is: *const IterSpace) u8 {
+    return @typeInfo(is.Indices).Enum.fields.len;
 }
 
 pub inline fn size(is: *const IterSpace, dim: u8) ?usize {
@@ -21,23 +23,24 @@ pub inline fn size(is: *const IterSpace, dim: u8) ?usize {
 }
 
 pub fn init(
-    comptime iterspace_shape: anytype,
+    comptime Shape: type,
     comptime Indices: type,
 ) IterSpace {
-    const _ndims = iterspace_shape.len;
+    const _ndims = utils.extractNdims(Shape);
+    const _shape = utils.extractShape(Shape);
     const default_loop_info = comptime blk: {
         var loop_info: [_ndims]utils.LoopInfo = undefined;
         for (0.._ndims) |d| {
             loop_info[d] = .{
                 .idx_dim = d,
-                .num_blocks = iterspace_shape[d],
+                .num_blocks = _shape[d],
             };
         }
         break :blk loop_info;
     };
     return .{
-        .idx_ndims = _ndims,
         .Indices = Indices,
+        .Shape = Shape,
         .loop_info = &default_loop_info,
     };
 }
@@ -81,7 +84,7 @@ pub fn split(
 
     return .{
         .Indices = is.Indices,
-        .idx_ndims = is.idx_ndims,
+        .Shape = is.Shape,
         .loop_info = is.loop_info[0..dim] ++ .{ outer_info, inner_info } ++ is.loop_info[dim + 1 .. is.ndims()],
     };
 }
@@ -153,7 +156,7 @@ pub fn reorder(
 ) IterSpace {
     return .{
         .loop_info = &comptime utils.arrayPermute(utils.LoopInfo, is.ndims(), is.loop_info[0..is.ndims()].*, new_order),
-        .idx_ndims = is.idx_ndims,
+        .Shape = is.Shape,
         .Indices = is.Indices,
     };
 }
@@ -175,7 +178,7 @@ pub fn vectorize(
     };
     return .{
         .loop_info = &new_info,
-        .idx_ndims = is.idx_ndims,
+        .Shape = is.Shape,
         .Indices = is.Indices,
     };
 }
@@ -193,7 +196,7 @@ pub fn unroll(
     };
     return .{
         .loop_info = &new_info,
-        .idx_ndims = is.idx_ndims,
+        .Shape = is.Shape,
         .Indices = is.Indices,
     };
 }
@@ -211,7 +214,7 @@ pub fn parallel(
     };
     return .{
         .loop_info = &new_info,
-        .idx_ndims = is.idx_ndims,
+        .Shape = is.Shape,
         .Indices = is.Indices,
     };
 }
@@ -221,13 +224,13 @@ pub fn nest(
     comptime Args: type,
     comptime iter_logic: func.Logic(Args, is.Indices),
 ) loop.Nest(Args, is) {
-    std.debug.assert(std.meta.activeTag(@typeInfo(is.Indices)) == .Enum and @typeInfo(is.Indices).Enum.fields.len == is.idx_ndims);
+    std.debug.assert(std.meta.activeTag(@typeInfo(is.Indices)) == .Enum and @typeInfo(is.Indices).Enum.fields.len == is.numIndices());
     return loop.Nest(Args, is).init(iter_logic);
 }
 
 test tile {
     const Indices = enum { i, j, k };
-    const tiled_iter_space = comptime IterSpace.init(.{ 32, 16, 8 }, Indices).tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
+    const tiled_iter_space = comptime IterSpace.init([32][16][8]f32, Indices).tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
         .block_size = 1,
@@ -268,7 +271,7 @@ test tile {
 
 test split {
     const Indices = enum { i, j };
-    const split_iter_space = comptime IterSpace.init(.{ 16, 8 }, Indices).split(0, 4);
+    const split_iter_space = comptime IterSpace.init([16][8]f32, Indices).split(0, 4);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
         .block_size = 4,
@@ -285,7 +288,7 @@ test split {
 test "split split" {
     const Indices = enum { i, j };
     const split_split_iter_space = comptime IterSpace
-        .init(.{ 16, 8 }, Indices)
+        .init([16][8]f32, Indices)
         .split(0, 4)
         .split(0, 2);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
@@ -310,13 +313,13 @@ test "split split" {
 
 test "vectorize" {
     const Indices = enum { i, j };
-    const t = comptime IterSpace.init(.{ 16, 8 }, Indices);
+    const t = comptime IterSpace.init([16][8]f32, Indices);
     _ = t.vectorize(1);
 }
 
 test "split vectorize" {
     const Indices = enum { i, j };
-    const split_vectorized_iter_space = comptime IterSpace.init(.{ 16, 8 }, Indices)
+    const split_vectorized_iter_space = comptime IterSpace.init([16][8]f32, Indices)
         .split(0, 4)
         .vectorize(2);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{

@@ -3,13 +3,20 @@ const loop = @import("loop.zig");
 const IterSpace = @import("IterSpace.zig");
 const utils = @import("utils.zig");
 
+pub const Layout = extern struct {
+    ndims: u8,
+    shape: [*]const usize,
+    strides: [*]const usize,
+    offest: usize = 0,
+};
+
 pub fn Buffer(comptime Array: type, comptime Indices: type) type {
-    const iter_space = IterSpace.init(utils.extractShape(Array), Indices);
+    const iter_space = IterSpace.init(Array, Indices);
     return IterSpaceBuffer(Array, iter_space);
 }
 
 pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) type {
-    return struct {
+    return extern struct {
         const Self = @This();
         const CACHE_LINE = std.atomic.cache_line;
 
@@ -19,7 +26,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
         /// Vectorized contiguous dim of the buffer.
         pub const Arr: type = Array;
 
-        layout: utils.Layout,
+        layout: Layout,
         data: [*]dtype align(CACHE_LINE),
 
         const numel: ?comptime_int = blk: {
@@ -54,8 +61,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             return IterSpaceBuffer(Arr, iter_space){
                 .layout = .{
                     .ndims = ndims,
-                    .shape = &shape,
-                    .strides = &contiguous_strides,
+                    .shape = @ptrCast(&shape),
+                    .strides = @ptrCast(&contiguous_strides),
                 },
                 .data = @alignCast(@ptrCast(slice)),
             };
@@ -107,7 +114,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             b: Self,
             /// Specify which indices of the iteration space will be used to index into the array
             comptime indices: [ndims]iter_space.Indices,
-            idx: [iter_space.idx_ndims]usize,
+            idx: [iter_space.numIndices()]usize,
         ) BlockData(indices) {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
@@ -134,7 +141,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             // if val is a vector, reduce it with the op, otherwise proceed with storing the val directly
             // if both are vectors, no reduction is needed
             val: BlockData(indices),
-            idx: [iter_space.idx_ndims]usize,
+            idx: [iter_space.numIndices()]usize,
         ) void {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
