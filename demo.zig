@@ -1,34 +1,44 @@
 const zirconium = @import("zirconium.zig");
 
+// First, define the constants: sizes and types of the matrices
 const M = 1024;
 const N = 1024;
 const P = 1024;
+
+const BLOCK_SIZE = 128;
+const SIMD_SIZE = 8;
 
 const A = [M][P]f32;
 const B = [N][P]f32;
 const C = [M][N]f32;
 
-const BLOCK_SIZE = 128;
-const SIMD_SIZE = 8;
-
-const Indices = enum { i, j, k };
-
-const iter_space = zirconium.IterSpace
-    .init([M][N][P]f32, Indices)
-    .tile(&.{ .{ 0, BLOCK_SIZE }, .{ 1, BLOCK_SIZE } })
-    .split(4, SIMD_SIZE)
-    .parallel(1)
-    .vectorize(5);
-
+// The args to matmul, all layout information will be provided
+// by the buffer that wraps around these types
 const Args = struct {
     a: A,
     b: B,
     c: C,
 };
 
-const matmul_logic: zirconium.Logic(Args, Indices) = struct {
+// Next, define the base indices for the loop nest.
+// It is better to use single character index names,
+// as splitting / tiling will repeat the character for each level of split.
+const DataIndex = enum { i, j, k };
+
+// Use these indices to create the iteration space, and transform it.
+// This does not have to be done in a functional/chained way as the type does not change.
+// The actual loopvar enum type can be accessed through iter_space.LoopVar
+const iter_space = zirconium.IterSpace
+    .init([M][N][P]f32, DataIndex)
+    .tile(&.{ .{ .i, BLOCK_SIZE }, .{ .j, BLOCK_SIZE } })
+    .split(.k, SIMD_SIZE)
+    .parallel(.jj, null)
+    .vectorize(.k);
+
+// The innermost logic for matmul
+const matmul_logic: zirconium.Logic(Args, DataIndex) = struct {
     pub inline fn logic(
-        args: zirconium.LogicArgs(Args, Indices),
+        args: zirconium.LogicArgs(Args, DataIndex),
         idx: [3]usize,
     ) void {
         const a = args.a.load(.{ .i, .k }, idx);
@@ -38,17 +48,19 @@ const matmul_logic: zirconium.Logic(Args, Indices) = struct {
     }
 }.logic;
 
+// Convert into a nest
 const nest = iter_space.nest(Args, matmul_logic);
 
+// Build into an export (C ABI function)
+export const matmul = nest.build();
+
+// Run the function
 pub fn main() !void {
-    // @compileLog(@TypeOf(iter_space));
-    // TODO: Need to support vectorized reduction
-    // by specifying a reduction dimension in the IterSpace, and a reduce op to apply
     const std = @import("std");
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = try nest.alloc(A, arena.allocator());
     const b = try nest.alloc(B, arena.allocator());
     const c = try nest.alloc(C, arena.allocator());
-    nest.eval(.{ .a = a, .b = b, .c = c });
+    matmul(.{ .a = a, .b = b, .c = c });
 }

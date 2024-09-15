@@ -7,74 +7,8 @@ const IterSpace = @import("IterSpace.zig");
 
 pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
     return struct {
-        const idx_ndims = iter_space.numIndices();
+        const idx_ndims = iter_space.numDataIndices();
         const CurrentNest = @This();
-
-        fn buildLogic(comptime iter_logic: func.Logic(Args, iter_space.Indices)) EvalItem {
-            const NarrowedLogic: type = func.IterSpaceLogic(Args, iter_space);
-            const narrowed_logic = @as(*const NarrowedLogic, @ptrCast(&iter_logic));
-            return .{
-                .eval = struct {
-                    /// Buffers are initially created with a default iter_space in the type, corresponding to the array type,
-                    /// not the one that has been transformed by the programmer.
-                    /// Both buffers are identical but the additional type information from the iter_space being used will change
-                    /// Casting will allow the usage of the indices enum to correctly identify vector loads and stores
-                    inline fn wrapped_iter_logic(args: func.IterSpaceLogicArgs(Args, iter_space), idx: [idx_ndims]usize) void {
-                        @call(.always_inline, narrowed_logic, .{ args, idx });
-                    }
-                }.wrapped_iter_logic,
-            };
-        }
-
-        fn buildLoop(comptime dim: u8, body: []const EvalItem) EvalItem {
-            const loop_info = iter_space.loop_info[dim];
-            return .{
-                .eval = struct {
-                    inline fn eval(args: func.IterSpaceLogicArgs(Args, iter_space), base_idx: [idx_ndims]usize) void {
-                        var idx = base_idx;
-                        const base_for_dim = base_idx[loop_info.idx_dim];
-                        var threads: [loop_info.num_blocks orelse 4]std.Thread = undefined;
-                        inline for (body) |item| {
-                            if (comptime loop_info.unrolled) {
-                                comptime var unroll_loopvar = loop_info.idx_min;
-                                comptime var i = 0;
-                                inline while (i < loop_info.num_blocks.?) : ({
-                                    unroll_loopvar += loop_info.block_size;
-                                    idx[loop_info.idx_dim] = base_for_dim + unroll_loopvar;
-                                    i += 1;
-                                }) {
-                                    if (comptime loop_info.parallel) {
-                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
-                                    } else {
-                                        item.eval(args, idx);
-                                    }
-                                }
-                            } else {
-                                var loopvar = loop_info.idx_min;
-                                var i: usize = 0;
-                                while (i < loop_info.num_blocks.?) : ({
-                                    loopvar += loop_info.block_size;
-                                    idx[loop_info.idx_dim] = base_for_dim + loopvar;
-                                    i += 1;
-                                }) {
-                                    if (comptime loop_info.parallel) {
-                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
-                                    } else {
-                                        item.eval(args, idx);
-                                    }
-                                }
-                            }
-                            if (comptime loop_info.parallel) {
-                                inline for (threads) |t| {
-                                    t.join();
-                                }
-                            }
-                        }
-                    }
-                }.eval,
-            };
-        }
-
         const EvalItem = struct {
             eval: func.IterSpaceLogic(Args, iter_space),
         };
@@ -82,7 +16,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
         body: []const EvalItem,
 
         pub fn init(
-            comptime iter_logic: func.Logic(Args, iter_space.Indices),
+            comptime iter_logic: func.Logic(Args, iter_space.DataIndex),
         ) @This() {
             if (iter_space.ndims() == 0) {
                 @compileError("cannot generate loop nest for 0 dimensional iteration space");
@@ -111,6 +45,77 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
                     }
                 }
             }.eval;
+        }
+
+        fn buildLogic(comptime iter_logic: func.Logic(Args, iter_space.DataIndex)) EvalItem {
+            const NarrowedLogic: type = func.IterSpaceLogic(Args, iter_space);
+            const narrowed_logic = @as(*const NarrowedLogic, @ptrCast(&iter_logic));
+            return .{
+                .eval = struct {
+                    /// Buffers are initially created with a default iter_space in the type, corresponding to the array type,
+                    /// not the one that has been transformed by the programmer.
+                    /// Both buffers are identical but the additional type information from the iter_space being used will change
+                    /// Casting will allow the usage of the data indices enum to correctly identify vector loads and stores
+                    inline fn wrapped_iter_logic(args: func.IterSpaceLogicArgs(Args, iter_space), idx: [idx_ndims]usize) void {
+                        @call(.always_inline, narrowed_logic, .{ args, idx });
+                    }
+                }.wrapped_iter_logic,
+            };
+        }
+
+        fn buildLoop(comptime dim: u8, body: []const EvalItem) EvalItem {
+            const loop_info = iter_space.loop_info[dim];
+            return .{
+                .eval = struct {
+                    /// Heart of the runtime code, this function will use comptime-powered elision to
+                    /// only generate / execute sections that are relevant to the loop
+                    /// - If the loop is not unrolled, only the regular loop branch will generate code
+                    /// - If the loop is not parallelized, no code for thead spawning/joining will be generated
+                    ///
+                    /// Similarly, the buffers will check during compile time whether to do a vector or scalar load
+                    inline fn eval(args: func.IterSpaceLogicArgs(Args, iter_space), base_idx: [idx_ndims]usize) void {
+                        var idx = base_idx;
+                        const base_for_dim = base_idx[loop_info.idx_dim];
+                        // if the loop is not parallel this should be a noop
+                        var threads: [loop_info.parallel orelse 0]std.Thread = undefined;
+                        inline for (body) |item| {
+                            if (comptime loop_info.unrolled) {
+                                comptime var unroll_loopvar = loop_info.idx_min;
+                                comptime var i = 0;
+                                inline while (i < loop_info.num_blocks.?) : ({
+                                    unroll_loopvar += loop_info.block_size;
+                                    idx[loop_info.idx_dim] = base_for_dim + unroll_loopvar;
+                                    i += 1;
+                                }) {
+                                    if (comptime loop_info.parallel) |_| {
+                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
+                                    } else {
+                                        item.eval(args, idx);
+                                    }
+                                }
+                            } else {
+                                var loopvar = loop_info.idx_min;
+                                var i: usize = 0;
+                                while (i < loop_info.num_blocks.?) : ({
+                                    loopvar += loop_info.block_size;
+                                    idx[loop_info.idx_dim] = base_for_dim + loopvar;
+                                    i += 1;
+                                }) {
+                                    if (comptime loop_info.parallel) |_| {
+                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
+                                    } else {
+                                        item.eval(args, idx);
+                                    }
+                                }
+                            }
+                            // this would also be a noop if there are 0 parallel threads
+                            inline for (threads) |t| {
+                                t.join();
+                            }
+                        }
+                    }
+                }.eval,
+            };
         }
 
         pub inline fn eval(
@@ -213,7 +218,7 @@ test "unroll nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const unrolled_iter_space = comptime test_iter_space.unroll(1);
+    const unrolled_iter_space = comptime test_iter_space.unroll(.j);
     const nest = unrolled_iter_space.nest(TestArgs, test_logic);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{
         .{
@@ -236,22 +241,16 @@ test "vector nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const vectorized_iter_space = comptime test_iter_space.vectorize(1);
+    const vectorized_iter_space = comptime test_iter_space.vectorize(.j);
     const nest = comptime vectorized_iter_space.nest(TestArgs, test_logic);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
-        .block_size = 1,
         .num_blocks = 16,
-        .vector = false,
         .idx_dim = 0,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .num_blocks = 1,
         .idx_dim = 1,
         .block_size = 8,
         .vector = true,
-        .unrolled = false,
-        .parallel = false,
     } }, vectorized_iter_space.loop_info);
 
     var b = try nest.alloc(B, arena.allocator());
@@ -282,7 +281,7 @@ test "parallel nest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const parallel_iter_space = comptime test_iter_space.parallel(1);
+    const parallel_iter_space = comptime test_iter_space.parallel(.j, null);
     const nest = comptime parallel_iter_space.nest(TestArgs, test_logic);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .block_size = 1,
@@ -292,7 +291,7 @@ test "parallel nest" {
         .num_blocks = 8,
         .idx_dim = 1,
         .block_size = 1,
-        .parallel = true,
+        .parallel = 8,
     } }, parallel_iter_space.loop_info);
 
     var b = try nest.alloc(B, arena.allocator());
@@ -305,13 +304,11 @@ test "split split vector nest" {
     defer arena.deinit();
 
     const transformed_iter_space = comptime test_iter_space
-        .split(1, 4)
-        .split(0, 4)
-        .vectorize(3);
+        .split(.j, 4)
+        .split(.i, 4)
+        .vectorize(.j);
 
     const nest = comptime transformed_iter_space.nest(TestArgs, test_logic);
-    // const expected = comptime Nest(TestArgs, ssv).Loop{
-    //     .idx_max = 4,
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{
         .{
             .num_blocks = 4,

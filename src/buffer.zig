@@ -10,8 +10,8 @@ pub const Layout = extern struct {
     offest: usize = 0,
 };
 
-pub fn Buffer(comptime Array: type, comptime Indices: type) type {
-    const iter_space = IterSpace.init(Array, Indices);
+pub fn Buffer(comptime Array: type, comptime DataIndex: type) type {
+    const iter_space = IterSpace.init(Array, DataIndex);
     return IterSpaceBuffer(Array, iter_space);
 }
 
@@ -23,7 +23,6 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
         pub const dtype = utils.Datatype(Array);
         const ndims = utils.extractNdims(Array);
         const shape = utils.extractShape(Array);
-        /// Vectorized contiguous dim of the buffer.
         pub const Arr: type = Array;
 
         layout: Layout,
@@ -32,7 +31,11 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
         const numel: ?comptime_int = blk: {
             var n = 1;
             for (shape) |len| {
-                n *= len;
+                if (len) |l| {
+                    n *= l;
+                } else {
+                    break :blk null;
+                }
             }
             break :blk n;
         };
@@ -44,7 +47,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             var offset: usize = 1;
             var strides: [ndims]usize = undefined;
             for (0..ndims - 1) |d| {
-                const stride = shape[ndims - d - 1] * offset;
+                const stride = shape[ndims - d - 1].? * offset;
                 strides[ndims - d - 2] = stride;
                 offset = stride;
             }
@@ -79,7 +82,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             return init(slice);
         }
 
-        pub fn constant(_: Self, comptime indices: [ndims]iter_space.Indices, val: dtype) BlockData(indices) {
+        pub fn constant(_: Self, comptime indices: [ndims]iter_space.DataIndex, val: dtype) BlockData(indices) {
             if (BlockData(indices) == dtype) {
                 return val;
             } else {
@@ -96,7 +99,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             return i;
         }
 
-        fn BlockData(comptime indices: [ndims]iter_space.Indices) type {
+        fn BlockData(comptime indices: [ndims]iter_space.DataIndex) type {
             for (indices, 0..) |ind, d| {
                 const dim = @intFromEnum(ind);
                 for (iter_space.loop_info) |loop_info| {
@@ -113,8 +116,8 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
         pub inline fn load(
             b: Self,
             /// Specify which indices of the iteration space will be used to index into the array
-            comptime indices: [ndims]iter_space.Indices,
-            idx: [iter_space.numIndices()]usize,
+            comptime indices: [ndims]iter_space.DataIndex,
+            idx: [iter_space.numDataIndices()]usize,
         ) BlockData(indices) {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {
@@ -136,12 +139,12 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
 
         pub inline fn store(
             b: Self,
-            comptime indices: [ndims]iter_space.Indices,
+            comptime indices: [ndims]iter_space.DataIndex,
             // idea; make val anytype, store reduction dimension info in idx type along with reduction op
             // if val is a vector, reduce it with the op, otherwise proceed with storing the val directly
             // if both are vectors, no reduction is needed
             val: BlockData(indices),
-            idx: [iter_space.numIndices()]usize,
+            idx: [iter_space.numDataIndices()]usize,
         ) void {
             var selected: [ndims]usize = undefined;
             inline for (indices, 0..) |ind, d| {

@@ -6,16 +6,24 @@ const AllocatedBuffer = @import("buffer.zig").Buffer;
 
 const IterSpace = @This();
 
-Indices: type,
-Shape: type,
+DataIndex: type,
+LoopVar: type,
 loop_info: []const utils.LoopInfo,
 
 pub inline fn ndims(is: *const IterSpace) u8 {
     return is.loop_info.len;
 }
 
-pub inline fn numIndices(is: *const IterSpace) u8 {
-    return @typeInfo(is.Indices).Enum.fields.len;
+pub inline fn indexName(is: *const IterSpace, dim: u8) [:0]const u8 {
+    return @typeInfo(is.DataIndex).Enum.fields[dim].name;
+}
+
+pub inline fn numDataIndices(is: *const IterSpace) u8 {
+    return @typeInfo(is.DataIndex).Enum.fields.len;
+}
+
+pub inline fn numLoopVars(is: *const IterSpace) u8 {
+    return @typeInfo(is.LoopVar).Enum.fields.len;
 }
 
 pub inline fn size(is: *const IterSpace, dim: u8) ?usize {
@@ -24,7 +32,7 @@ pub inline fn size(is: *const IterSpace, dim: u8) ?usize {
 
 pub fn init(
     comptime Shape: type,
-    comptime Indices: type,
+    comptime DataIndex: type,
 ) IterSpace {
     const _ndims = utils.extractNdims(Shape);
     const _shape = utils.extractShape(Shape);
@@ -39,13 +47,13 @@ pub fn init(
         break :blk loop_info;
     };
     return .{
-        .Indices = Indices,
-        .Shape = Shape,
+        .DataIndex = DataIndex,
+        .LoopVar = DataIndex,
         .loop_info = &default_loop_info,
     };
 }
 
-pub fn split(
+fn splitDimInt(
     comptime is: *const IterSpace,
     comptime dim: u8,
     comptime block_size: usize,
@@ -79,50 +87,108 @@ pub fn split(
         .block_size = is.loop_info[dim].block_size,
         .vector = is.loop_info[dim].vector,
         .unrolled = is.loop_info[dim].unrolled,
-        .parallel = false,
+        .parallel = null,
     };
 
+    var newIndicesFields: [is.ndims() + 1]std.builtin.Type.EnumField = undefined;
+    var d = 0;
+    for (0..dim) |_| {
+        newIndicesFields[d] = @typeInfo(is.LoopVar).Enum.fields[d];
+        d += 1;
+    }
+    newIndicesFields[d] =
+        std.builtin.Type.EnumField{
+        .name = std.meta.fieldNames(is.LoopVar)[dim] ++ std.meta.fieldNames(is.DataIndex)[is.loop_info[dim].idx_dim],
+        .value = @as(comptime_int, @intCast(dim)),
+    };
+    d += 1;
+    for (dim..is.ndims()) |_| {
+        newIndicesFields[d] =
+            std.builtin.Type.EnumField{
+            .name = std.meta.fieldNames(is.LoopVar)[d - 1],
+            .value = @as(comptime_int, @intCast(d)),
+        };
+        d += 1;
+    }
+    const NewLoopVar = @Type(.{
+        .Enum = std.builtin.Type.Enum{
+            .decls = &.{},
+            .fields = &newIndicesFields,
+            .is_exhaustive = true,
+            .tag_type = u8,
+        },
+    });
+
     return .{
-        .Indices = is.Indices,
-        .Shape = is.Shape,
+        .DataIndex = is.DataIndex,
+        .LoopVar = NewLoopVar,
         .loop_info = is.loop_info[0..dim] ++ .{ outer_info, inner_info } ++ is.loop_info[dim + 1 .. is.ndims()],
     };
+}
+
+pub fn split(
+    comptime is: *const IterSpace,
+    comptime dim: is.LoopVar,
+    comptime block_size: usize,
+) IterSpace {
+    return is.splitDimInt(@intFromEnum(dim), block_size);
 }
 
 fn tileHelper(
     comptime is: *const IterSpace,
     comptime dim_offset: u8,
-    comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize }),
+    comptime sorted_tiling: []const std.meta.Tuple(&.{ u8, usize }),
 ) IterSpace {
-    const dim, const block_size = sorted_tile_config[0];
-    if (sorted_tile_config.len > 1) {
+    const dim, const block_size = sorted_tiling[0];
+    if (sorted_tiling.len > 1) {
         // dim offset is needed because as we process each split, a new dim is added.
-        // TODO: sort tile_config by dim before processing it
-        return is.split(dim, block_size)
-            .tileHelper(dim_offset + 1, sorted_tile_config[1..]);
+        return is.splitDimInt(dim, block_size)
+            .tileHelper(dim_offset + 1, sorted_tiling[1..]);
     }
-    return is.split(dim + dim_offset, block_size);
+    return is.splitDimInt(dim + dim_offset, block_size);
 }
 
-fn tileReorder(
-    comptime tile_ndims: u8,
-    comptime sorted_tile_config: []const std.meta.Tuple(&.{ u8, usize }),
-) []const u8 {
-    var new_order: [tile_ndims]u8 = undefined;
-    var added_dims: [tile_ndims]bool = .{false} ** tile_ndims;
+/// Splits and reorders as per tiling
+///
+/// Example:
+///
+/// original: `[..., i, ..., j, ..., k]`
+///
+/// splits result in `[..., ii, i, ..., jj, j, ..., kk, k]`
+///
+/// reorder results in `[..., ii, jj, kk, i, ..., j, ..., k]`
+pub fn tile(
+    comptime is: *const IterSpace,
+    comptime tiling: []const std.meta.Tuple(&.{ is.LoopVar, usize }),
+) IterSpace {
+    // tile helper creates the extra splits, but it still needs to be reordered
+    // also convert from enums to ints
+    var sorted_tiling: [tiling.len]std.meta.Tuple(&.{ u8, usize }) = undefined;
+    for (tiling, 0..) |t, i| {
+        sorted_tiling[i] = .{ @intFromEnum(t[0]), t[1] };
+    }
+    std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tiling, {}, struct {
+        fn lessThan(_: void, lhs: std.meta.Tuple(&.{ u8, usize }), rhs: std.meta.Tuple(&.{ u8, usize })) bool {
+            return lhs[0] < rhs[0];
+        }
+    }.lessThan);
+    const tiled = is.tileHelper(0, &sorted_tiling);
 
-    for (sorted_tile_config, 0..) |tile_cfg, count| {
+    // compute the new dimension order
+    var new_order: [tiled.ndims()]u8 = undefined;
+    var added_dims: [tiled.ndims()]bool = .{false} ** tiled.ndims();
+    for (sorted_tiling, 0..) |tile_cfg, count| {
         const idx_dim, _ = tile_cfg;
         const new_dim = idx_dim + count;
-        new_order[count + sorted_tile_config[0][0]] = new_dim;
+        new_order[count + sorted_tiling[0][0]] = new_dim;
         added_dims[new_dim] = true;
     }
 
-    const inner_dims_offset = sorted_tile_config[0][0] + sorted_tile_config.len;
+    const inner_dims_offset = sorted_tiling[0][0] + sorted_tiling.len;
     var inner_dims_idx = 0;
     for (added_dims, 0..) |is_added, dim| {
         if (!is_added) {
-            if (dim < sorted_tile_config[0][0]) {
+            if (dim < sorted_tiling[0][0]) {
                 new_order[dim] = dim;
             } else {
                 new_order[inner_dims_idx + inner_dims_offset] = dim;
@@ -131,33 +197,34 @@ fn tileReorder(
         }
     }
 
-    return &new_order;
-}
-
-pub fn tile(
-    comptime is: *const IterSpace,
-    comptime tile_config: []const std.meta.Tuple(&.{ u8, usize }),
-) IterSpace {
-    // tile helper creates the extra splits, but it still needs to be reordered
-    var sorted_tile_config = tile_config[0..tile_config.len].*;
-    std.sort.insertion(std.meta.Tuple(&.{ u8, usize }), &sorted_tile_config, {}, struct {
-        fn lessThan(_: void, lhs: std.meta.Tuple(&.{ u8, usize }), rhs: std.meta.Tuple(&.{ u8, usize })) bool {
-            return lhs[0] < rhs[0];
-        }
-    }.lessThan);
-    const tiled = is.tileHelper(0, &sorted_tile_config);
-    const tiled_ndims = tiled.loop_info.len;
-    return tiled.reorder(tileReorder(tiled_ndims, &sorted_tile_config)[0..tiled_ndims].*);
+    return tiled.reorder(new_order);
 }
 
 pub fn reorder(
     comptime is: *const IterSpace,
     comptime new_order: [is.ndims()]u8,
 ) IterSpace {
+    var newIndicesFields: [is.ndims()]std.builtin.Type.EnumField = utils.arrayPermute(
+        std.builtin.Type.EnumField,
+        is.ndims(),
+        @typeInfo(is.LoopVar).Enum.fields[0..is.ndims()].*,
+        new_order,
+    );
+    for (0..is.ndims()) |d| {
+        newIndicesFields[d].value = d;
+    }
+    const NewLoopVar = @Type(.{
+        .Enum = std.builtin.Type.Enum{
+            .decls = &.{},
+            .fields = &newIndicesFields,
+            .is_exhaustive = true,
+            .tag_type = u8,
+        },
+    });
     return .{
         .loop_info = &comptime utils.arrayPermute(utils.LoopInfo, is.ndims(), is.loop_info[0..is.ndims()].*, new_order),
-        .Shape = is.Shape,
-        .Indices = is.Indices,
+        .DataIndex = is.DataIndex,
+        .LoopVar = NewLoopVar,
     };
 }
 
@@ -165,113 +232,111 @@ pub fn reorder(
 // the following function is removed from the namespace of this type
 pub fn vectorize(
     comptime is: *const IterSpace,
-    comptime dim: u8,
+    comptime dim: is.LoopVar,
 ) IterSpace {
+    const d = @intFromEnum(dim);
     const new_info = blk: {
         var loop_info = is.loop_info[0..is.ndims()].*;
-        loop_info[dim].vector = true;
-        loop_info[dim].block_size = is.loop_info[dim].num_blocks.?;
-        loop_info[dim].num_blocks = 1;
-        loop_info[dim].parallel = false;
-        loop_info[dim].unrolled = false;
+        loop_info[d].vector = true;
+        loop_info[d].block_size = is.loop_info[d].num_blocks.?;
+        loop_info[d].num_blocks = 1;
+        loop_info[d].parallel = null;
+        loop_info[d].unrolled = false;
         break :blk loop_info;
     };
     return .{
         .loop_info = &new_info,
-        .Shape = is.Shape,
-        .Indices = is.Indices,
+        .DataIndex = is.DataIndex,
+        .LoopVar = is.LoopVar,
     };
 }
 
 pub fn unroll(
     comptime is: *const IterSpace,
-    comptime dim: u8,
+    comptime dim: is.LoopVar,
 ) IterSpace {
+    const d = @intFromEnum(dim);
     const new_info = blk: {
         var loop_info = is.loop_info[0..is.ndims()].*;
-        loop_info[dim].parallel = false;
-        loop_info[dim].unrolled = true;
-        loop_info[dim].vector = false;
+        loop_info[d].parallel = null;
+        loop_info[d].unrolled = true;
+        loop_info[d].vector = false;
         break :blk loop_info;
     };
     return .{
         .loop_info = &new_info,
-        .Shape = is.Shape,
-        .Indices = is.Indices,
+        .DataIndex = is.DataIndex,
+        .LoopVar = is.LoopVar,
     };
 }
 
 pub fn parallel(
     comptime is: *const IterSpace,
-    comptime dim: u8,
+    comptime dim: is.LoopVar,
+    comptime n_threads: ?u8,
 ) IterSpace {
+    const d = @intFromEnum(dim);
     const new_info = blk: {
         var loop_info = is.loop_info[0..is.ndims()].*;
-        loop_info[dim].parallel = true;
-        loop_info[dim].unrolled = false;
-        loop_info[dim].vector = false;
+        loop_info[d].parallel = n_threads orelse is.loop_info[d].num_blocks;
+        loop_info[d].unrolled = false;
+        loop_info[d].vector = false;
         break :blk loop_info;
     };
     return .{
         .loop_info = &new_info,
-        .Shape = is.Shape,
-        .Indices = is.Indices,
+        .DataIndex = is.DataIndex,
+        .LoopVar = is.LoopVar,
     };
 }
 
 pub fn nest(
     comptime is: IterSpace,
     comptime Args: type,
-    comptime iter_logic: func.Logic(Args, is.Indices),
+    comptime iter_logic: func.Logic(Args, is.DataIndex),
 ) loop.Nest(Args, is) {
-    std.debug.assert(std.meta.activeTag(@typeInfo(is.Indices)) == .Enum and @typeInfo(is.Indices).Enum.fields.len == is.numIndices());
+    std.debug.assert(std.meta.activeTag(@typeInfo(is.DataIndex)) == .Enum and @typeInfo(is.DataIndex).Enum.fields.len == is.numDataIndices());
     return loop.Nest(Args, is).init(iter_logic);
 }
 
 test tile {
-    const Indices = enum { i, j, k };
-    const tiled_iter_space = comptime IterSpace.init([32][16][8]f32, Indices).tile(&.{ .{ 1, 8 }, .{ 2, 4 } });
+    const DataIndex = enum { i, j, k };
+    const tiled_iter_space = comptime IterSpace.init([32][16][8]f32, DataIndex).tile(&.{ .{ .j, 8 }, .{ .k, 4 } });
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 2, 3, 4 }, &.{
+        @intFromEnum(tiled_iter_space.LoopVar.i),
+        @intFromEnum(tiled_iter_space.LoopVar.jj),
+        @intFromEnum(tiled_iter_space.LoopVar.kk),
+        @intFromEnum(tiled_iter_space.LoopVar.j),
+        @intFromEnum(tiled_iter_space.LoopVar.k),
+    });
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
-        .block_size = 1,
         .num_blocks = 32,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .idx_dim = 1,
         .block_size = 8,
         .num_blocks = 2,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .idx_dim = 2,
         .block_size = 4,
         .num_blocks = 2,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .idx_dim = 1,
-        .block_size = 1,
         .num_blocks = 8,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .idx_dim = 2,
-        .block_size = 1,
         .num_blocks = 4,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     } }, tiled_iter_space.loop_info);
 }
 
 test split {
-    const Indices = enum { i, j };
-    const split_iter_space = comptime IterSpace.init([16][8]f32, Indices).split(0, 4);
+    const DataIndex = enum { i, j };
+    const split_iter_space = comptime IterSpace.init([16][8]f32, DataIndex).split(.i, 4);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 2 }, &.{
+        @intFromEnum(split_iter_space.LoopVar.ii),
+        @intFromEnum(split_iter_space.LoopVar.i),
+        @intFromEnum(split_iter_space.LoopVar.j),
+    });
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
         .block_size = 4,
@@ -286,18 +351,15 @@ test split {
 }
 
 test "split split" {
-    const Indices = enum { i, j };
+    const DataIndex = enum { i, j };
     const split_split_iter_space = comptime IterSpace
-        .init([16][8]f32, Indices)
-        .split(0, 4)
-        .split(0, 2);
+        .init([16][8]f32, DataIndex)
+        .split(.i, 4)
+        .split(.ii, 2);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
         .block_size = 2,
         .num_blocks = 2,
-        .vector = false,
-        .unrolled = false,
-        .parallel = false,
     }, .{
         .idx_dim = 0,
         .block_size = 4,
@@ -312,16 +374,16 @@ test "split split" {
 }
 
 test "vectorize" {
-    const Indices = enum { i, j };
-    const t = comptime IterSpace.init([16][8]f32, Indices);
-    _ = t.vectorize(1);
+    const DataIndex = enum { i, j };
+    const t = comptime IterSpace.init([16][8]f32, DataIndex);
+    _ = t.vectorize(.j);
 }
 
 test "split vectorize" {
-    const Indices = enum { i, j };
-    const split_vectorized_iter_space = comptime IterSpace.init([16][8]f32, Indices)
-        .split(0, 4)
-        .vectorize(2);
+    const DataIndex = enum { i, j };
+    const split_vectorized_iter_space = comptime IterSpace.init([16][8]f32, DataIndex)
+        .split(.i, 4)
+        .vectorize(.j);
     try std.testing.expectEqualSlices(utils.LoopInfo, &.{ .{
         .idx_dim = 0,
         .block_size = 4,

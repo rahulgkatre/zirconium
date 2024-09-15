@@ -13,11 +13,11 @@ fn validateArgsType(comptime Type: type) void {
     }
 }
 
-pub fn LogicArgs(comptime Args: type, comptime Indices: type) type {
+pub fn LogicArgs(comptime Args: type, comptime DataIndex: type) type {
     var fields: [@typeInfo(Args).Struct.fields.len]std.builtin.Type.StructField = undefined;
 
     for (@typeInfo(Args).Struct.fields, 0..) |field, i| {
-        const Type = Buffer(field.type, Indices);
+        const Type = Buffer(field.type, DataIndex);
         fields[i] = std.builtin.Type.StructField{
             .alignment = @alignOf(Type),
             .is_comptime = false,
@@ -38,15 +38,15 @@ pub fn LogicArgs(comptime Args: type, comptime Indices: type) type {
 }
 
 /// When defining loop logic, use this type.
-pub fn Logic(comptime Args: type, comptime Indices: type) type {
-    const idx_ndims = @typeInfo(Indices).Enum.fields.len;
+pub fn Logic(comptime Args: type, comptime DataIndex: type) type {
+    const idx_ndims = @typeInfo(DataIndex).Enum.fields.len;
     if (Args != void) validateArgsType(Args);
 
     const params: [2]std.builtin.Type.Fn.Param = .{
         .{
             .is_generic = false,
             .is_noalias = false,
-            .type = LogicArgs(Args, Indices),
+            .type = LogicArgs(Args, DataIndex),
         },
         .{
             .is_generic = false,
@@ -100,7 +100,7 @@ pub fn IterSpaceLogic(comptime Args: type, comptime iter_space: IterSpace) type 
         .{
             .is_generic = false,
             .is_noalias = false,
-            .type = [iter_space.numIndices()]usize,
+            .type = [iter_space.numDataIndices()]usize,
         },
     };
     return @Type(.{ .Fn = .{

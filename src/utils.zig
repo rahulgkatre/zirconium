@@ -9,7 +9,7 @@ pub const LoopInfo = struct {
     block_size: usize = 1,
     vector: bool = false,
     unrolled: bool = false,
-    parallel: bool = false,
+    parallel: ?usize = null,
     gpu: bool = false,
 };
 
@@ -44,7 +44,7 @@ pub fn extractNdims(comptime Array: type) u8 {
     @compileError("Must provide an array type (e.g. [M][N][P]DType), received " ++ std.fmt.comptimePrint("{any}", .{Array}));
 }
 
-pub fn extractShape(comptime Array: type) [extractNdims(Array)]usize {
+pub fn extractShape(comptime Array: type) [extractNdims(Array)]?usize {
     switch (@typeInfo(Array)) {
         .Pointer => |info| if (info.size == .Many) return .{null} ++ extractShape(info.child),
         .Array => |info| return .{info.len} ++ extractShape(info.child),
