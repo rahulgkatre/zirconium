@@ -111,8 +111,6 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
             return dtype;
         }
 
-        /// TODO: Using indices + iter_space, determine the type of Unit.
-        /// e.g. if accessing a vectorized index, Unit should be a vector
         pub inline fn load(
             b: Self,
             /// Specify which indices of the iteration space will be used to index into the array
@@ -140,7 +138,7 @@ pub fn IterSpaceBuffer(comptime Array: type, comptime iter_space: IterSpace) typ
         pub inline fn store(
             b: Self,
             comptime indices: [ndims]iter_space.DataIndex,
-            // idea; make val anytype, store reduction dimension info in idx type along with reduction op
+            // TODO: make val anytype, store reduction dimension info in idx type along with reduction op
             // if val is a vector, reduce it with the op, otherwise proceed with storing the val directly
             // if both are vectors, no reduction is needed
             val: BlockData(indices),

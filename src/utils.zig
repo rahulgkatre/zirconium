@@ -1,6 +1,11 @@
 const std = @import("std");
 const IterationSpace = @import("IterSpace.zig").IterationSpace;
 
+pub const GpuVar = enum {
+    workGroupId,
+    workItemId,
+};
+
 pub const LoopInfo = struct {
     idx_min: usize = 0,
     idx_dim: u8,
@@ -10,7 +15,7 @@ pub const LoopInfo = struct {
     vector: bool = false,
     unrolled: bool = false,
     parallel: ?usize = null,
-    gpu: bool = false,
+    gpu: ?GpuVar = null,
 };
 
 pub fn ShapeToArray(comptime dtype: type, comptime ndims: u8, comptime shape: *const [ndims]usize) type {

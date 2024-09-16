@@ -52,10 +52,11 @@ const matmul_func: Func.Def = struct {
 }.logic;
 
 // Convert into a nest
+// TODO: Fuse nests together into a FusedNest
 const nest = iter_space.nest(Args, matmul_func);
 
 // Build into an export (C ABI function)
-export const matmul = nest.buildExtern();
+export const matmul = nest.compile();
 
 // Optional: run the function
 // Can also just export .so and call from any language that supports C ABI

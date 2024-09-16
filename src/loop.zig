@@ -10,7 +10,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
         const idx_ndims = iter_space.numDataIndices();
         const CurrentNest = @This();
         const EvalItem = struct {
-            eval: func.IterSpaceFunc(Args, iter_space).StructFn,
+            eval: func.IterSpaceFunc(Args, iter_space).TupleFn,
         };
 
         body: []const EvalItem,
@@ -32,42 +32,62 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
             };
         }
 
-        fn buildFunc(comptime iter_logic: func.Func(Args, iter_space.DataIndex).Def) EvalItem {
-            const NarrowedFunc: type = func.IterSpaceFunc(Args, iter_space).SeparatesFn;
-            const narrowed_logic = @as(*const NarrowedFunc, @ptrCast(&iter_logic));
+        fn buildKernel(comptime iter_logic: func.Func(Args, iter_space.DataIndex).Def) EvalItem {
             return .{
                 .eval = struct {
+                    const DeviceKernel = func.IterSpaceKernel(Args, iter_space);
+                    // The kernel func will look exactly like the iter logic, except it needs to have
+                    // the iter space specified and also have the Kernel calling convention
+                    const kernel = @as(*const DeviceKernel, @ptrCast(&iter_logic));
+                    // The eval function launches the kernel
+                    inline fn eval(idx: [idx_ndims]usize, args: func.IterSpaceArgsTuple(Args, iter_space)) void {
+                        // TODO: copy args to gpu device
+                        const tuple_args: *const func.IterSpaceArgsTuple(Args, iter_space) = @ptrCast(&args);
+                        @call(.auto, kernel, .{idx} ++ tuple_args.*);
+                    }
+                }.eval,
+            };
+        }
+
+        fn buildFunc(comptime iter_logic: func.Func(Args, iter_space.DataIndex).Def) EvalItem {
+            return .{
+                .eval = struct {
+                    // This
+                    const EvalFunc: type = func.IterSpaceFunc(Args, iter_space).SeparatesFn;
+                    const evalFunc = @as(*const EvalFunc, @ptrCast(&iter_logic));
                     /// Buffers are initially created with a default iter_space in the type, corresponding to the array type,
                     /// not the one that has been transformed by the programmer.
                     /// Both buffers are identical but the additional type information from the iter_space being used will change
                     /// Casting will allow the usage of the data indices enum to correctly identify vector loads and stores
-                    inline fn wrapped_iter_logic(idx: [idx_ndims]usize, args: func.IterSpaceArgsStruct(Args, iter_space)) void {
+                    inline fn eval(idx: [idx_ndims]usize, args: func.IterSpaceArgsTuple(Args, iter_space)) void {
                         const tuple_args: *const func.IterSpaceArgsTuple(Args, iter_space) = @ptrCast(&args);
-                        @call(.always_inline, narrowed_logic, .{idx} ++ tuple_args.*);
+                        @call(.always_inline, evalFunc, .{idx} ++ tuple_args.*);
                     }
-                }.wrapped_iter_logic,
+                }.eval,
             };
         }
 
         fn buildLoop(comptime dim: u8, body: []const EvalItem) EvalItem {
-            const loop_info = iter_space.loop_info[dim];
             return .{
                 .eval = struct {
+                    const loop_info = iter_space.loop_info[dim];
                     /// Heart of the runtime code, this function will use comptime-powered elision to
                     /// only generate / execute sections that are relevant to the loop
                     /// - If the loop is not unrolled, only the regular loop branch will generate code
                     /// - If the loop is not parallelized, no code for thead spawning/joining will be generated
                     ///
                     /// Similarly, the buffers will check during compile time whether to do a vector or scalar load
-                    inline fn eval(base_idx: [idx_ndims]usize, args: func.IterSpaceArgsStruct(Args, iter_space)) void {
+                    inline fn eval(base_idx: [idx_ndims]usize, args: func.IterSpaceArgsTuple(Args, iter_space)) void {
                         var idx = base_idx;
                         const base_for_dim = base_idx[loop_info.idx_dim];
                         // if the loop is not parallel this should be a noop
                         var threads: [loop_info.parallel orelse 0]std.Thread = undefined;
                         inline for (body) |item| {
                             if (comptime loop_info.unrolled) {
+                                // for inlining, the loopvar is comptime
                                 comptime var unroll_loopvar = loop_info.idx_min;
                                 comptime var i = 0;
+                                // null assert required as loop bound must be comptime known (cannot be dynamic)
                                 inline while (i < loop_info.num_blocks.?) : ({
                                     unroll_loopvar += loop_info.block_size;
                                     idx[loop_info.idx_dim] = base_for_dim + unroll_loopvar;
@@ -104,11 +124,11 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
             };
         }
 
-        pub fn buildExtern(comptime nest: *const @This()) func.ExternFn(Args, iter_space) {
+        pub fn compile(comptime nest: *const @This()) func.ExternFunc(Args, iter_space).Def {
             return comptime struct {
-                fn eval(args: func.ExternFnArgs(Args, iter_space)) callconv(.C) void {
+                fn eval(args: func.ExternFunc(Args, iter_space).Param) callconv(.C) void {
                     const idx: [idx_ndims]usize = .{0} ** idx_ndims;
-                    var _args: func.IterSpaceArgsStruct(Args, iter_space) = undefined;
+                    var _args: func.IterSpaceArgsTuple(Args, iter_space) = undefined;
                     inline for (comptime std.meta.fieldNames(Args), 0..) |field_name, field_idx| {
                         @field(_args, std.fmt.comptimePrint("{d}", .{field_idx})) = @field(args, field_name);
                     }
@@ -121,9 +141,9 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
 
         pub inline fn eval(
             comptime nest: *const @This(),
-            args: func.ExternFnArgs(Args, iter_space),
+            args: func.ExternFuncParam(Args, iter_space),
         ) void {
-            const eval_func = comptime nest.buildExtern();
+            const eval_func = comptime nest.compile();
             eval_func(args);
         }
 

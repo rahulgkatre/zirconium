@@ -6,8 +6,12 @@ const AllocatedBuffer = @import("buffer.zig").Buffer;
 
 const IterSpace = @This();
 
+/// Enum for buffer indices which are used to determine memory access / vectorization
 DataIndex: type,
+
+/// Enum for purely logical indices which are used for iteration space transforms
 LoopVar: type,
+
 loop_info: []const utils.LoopInfo,
 
 pub inline fn ndims(is: *const IterSpace) u8 {
@@ -225,6 +229,36 @@ pub fn reorder(
         .loop_info = &comptime utils.arrayPermute(utils.LoopInfo, is.ndims(), is.loop_info[0..is.ndims()].*, new_order),
         .DataIndex = is.DataIndex,
         .LoopVar = NewLoopVar,
+    };
+}
+
+pub fn gpu(
+    comptime is: *const IterSpace,
+    comptime kernel_group_dim: is.LoopVar,
+    comptime kernel_item_dim: is.LoopVar,
+) IterSpace {
+    const group = @intFromEnum(kernel_group_dim);
+    const item = @intFromEnum(kernel_item_dim);
+    std.debug.assert(group != item);
+    const new_info = blk: {
+        var loop_info = is.loop_info[0..is.ndims()].*;
+        loop_info[group].vector = false;
+        loop_info[group].block_size = 1;
+        loop_info[group].num_blocks = is.loop_info[group].num_blocks.?;
+        loop_info[group].parallel = null;
+        loop_info[group].gpu = .workGroupId;
+
+        loop_info[item].vector = false;
+        loop_info[item].block_size = 1;
+        loop_info[item].num_blocks = is.loop_info[group].num_blocks.?;
+        loop_info[item].parallel = null;
+        loop_info[item].gpu = .workItemId;
+        break :blk loop_info;
+    };
+    return .{
+        .loop_info = &new_info,
+        .DataIndex = is.DataIndex,
+        .LoopVar = is.LoopVar,
     };
 }
 
