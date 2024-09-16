@@ -293,10 +293,10 @@ pub fn parallel(
 pub fn nest(
     comptime is: IterSpace,
     comptime Args: type,
-    comptime iter_logic: func.Logic(Args, is.DataIndex),
+    comptime iter_func: func.Func(Args, is.DataIndex).Def,
 ) loop.Nest(Args, is) {
     std.debug.assert(std.meta.activeTag(@typeInfo(is.DataIndex)) == .Enum and @typeInfo(is.DataIndex).Enum.fields.len == is.numDataIndices());
-    return loop.Nest(Args, is).init(iter_logic);
+    return loop.Nest(Args, is).init(iter_func);
 }
 
 test tile {

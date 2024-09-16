@@ -36,25 +36,29 @@ const iter_space = zirconium.IterSpace
     .vectorize(.k);
 
 // The innermost logic for matmul
-const matmul_logic: zirconium.Logic(Args, DataIndex) = struct {
+const Func = zirconium.Func(Args, DataIndex);
+const matmul_func: Func.Def = struct {
     pub inline fn logic(
-        args: zirconium.LogicArgs(Args, DataIndex),
         idx: [3]usize,
+        a: Func.Param(A),
+        b: Func.Param(B),
+        c: Func.Param(C),
     ) void {
-        const a = args.a.load(.{ .i, .k }, idx);
-        const b = args.b.load(.{ .j, .k }, idx);
-        const c = args.c.load(.{ .i, .j }, idx);
-        args.c.store(.{ .i, .j }, @reduce(.Add, a * b) + c, idx);
+        const _a = a.load(.{ .i, .k }, idx);
+        const _b = b.load(.{ .j, .k }, idx);
+        const _c = c.load(.{ .i, .j }, idx);
+        c.store(.{ .i, .j }, @reduce(.Add, _a * _b) + _c, idx);
     }
 }.logic;
 
 // Convert into a nest
-const nest = iter_space.nest(Args, matmul_logic);
+const nest = iter_space.nest(Args, matmul_func);
 
 // Build into an export (C ABI function)
-export const matmul = nest.build();
+export const matmul = nest.buildExtern();
 
-// Run the function
+// Optional: run the function
+// Can also just export .so and call from any language that supports C ABI
 pub fn main() !void {
     const std = @import("std");
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

@@ -10,20 +10,20 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
         const idx_ndims = iter_space.numDataIndices();
         const CurrentNest = @This();
         const EvalItem = struct {
-            eval: func.IterSpaceLogic(Args, iter_space),
+            eval: func.IterSpaceFunc(Args, iter_space).StructFn,
         };
 
         body: []const EvalItem,
 
         pub fn init(
-            comptime iter_logic: func.Logic(Args, iter_space.DataIndex),
+            comptime iter_logic: func.Func(Args, iter_space.DataIndex).Def,
         ) @This() {
             if (iter_space.ndims() == 0) {
                 @compileError("cannot generate loop nest for 0 dimensional iteration space");
             }
             return .{
                 .body = comptime blk: {
-                    var body: []const EvalItem = &.{buildLogic(iter_logic)};
+                    var body: []const EvalItem = &.{buildFunc(iter_logic)};
                     for (0..iter_space.ndims()) |dim| {
                         body = &.{buildLoop(iter_space.ndims() - dim - 1, body)};
                     }
@@ -32,32 +32,18 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
             };
         }
 
-        pub fn build(comptime nest: *const @This()) func.ExternFn(Args, iter_space) {
-            return comptime struct {
-                fn eval(args: func.ExternFnArgs(Args, iter_space)) callconv(.C) void {
-                    const idx: [idx_ndims]usize = .{0} ** idx_ndims;
-                    var auto_args: func.IterSpaceLogicArgs(Args, iter_space) = undefined;
-                    inline for (comptime std.meta.fieldNames(Args)) |field_name| {
-                        @field(auto_args, field_name) = @field(args, field_name);
-                    }
-                    inline for (nest.body) |item| {
-                        item.eval(auto_args, idx);
-                    }
-                }
-            }.eval;
-        }
-
-        fn buildLogic(comptime iter_logic: func.Logic(Args, iter_space.DataIndex)) EvalItem {
-            const NarrowedLogic: type = func.IterSpaceLogic(Args, iter_space);
-            const narrowed_logic = @as(*const NarrowedLogic, @ptrCast(&iter_logic));
+        fn buildFunc(comptime iter_logic: func.Func(Args, iter_space.DataIndex).Def) EvalItem {
+            const NarrowedFunc: type = func.IterSpaceFunc(Args, iter_space).SeparatesFn;
+            const narrowed_logic = @as(*const NarrowedFunc, @ptrCast(&iter_logic));
             return .{
                 .eval = struct {
                     /// Buffers are initially created with a default iter_space in the type, corresponding to the array type,
                     /// not the one that has been transformed by the programmer.
                     /// Both buffers are identical but the additional type information from the iter_space being used will change
                     /// Casting will allow the usage of the data indices enum to correctly identify vector loads and stores
-                    inline fn wrapped_iter_logic(args: func.IterSpaceLogicArgs(Args, iter_space), idx: [idx_ndims]usize) void {
-                        @call(.always_inline, narrowed_logic, .{ args, idx });
+                    inline fn wrapped_iter_logic(idx: [idx_ndims]usize, args: func.IterSpaceArgsStruct(Args, iter_space)) void {
+                        const tuple_args: *const func.IterSpaceArgsTuple(Args, iter_space) = @ptrCast(&args);
+                        @call(.always_inline, narrowed_logic, .{idx} ++ tuple_args.*);
                     }
                 }.wrapped_iter_logic,
             };
@@ -73,7 +59,7 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
                     /// - If the loop is not parallelized, no code for thead spawning/joining will be generated
                     ///
                     /// Similarly, the buffers will check during compile time whether to do a vector or scalar load
-                    inline fn eval(args: func.IterSpaceLogicArgs(Args, iter_space), base_idx: [idx_ndims]usize) void {
+                    inline fn eval(base_idx: [idx_ndims]usize, args: func.IterSpaceArgsStruct(Args, iter_space)) void {
                         var idx = base_idx;
                         const base_for_dim = base_idx[loop_info.idx_dim];
                         // if the loop is not parallel this should be a noop
@@ -88,9 +74,9 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
                                     i += 1;
                                 }) {
                                     if (comptime loop_info.parallel) |_| {
-                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
+                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ idx, args }) catch unreachable;
                                     } else {
-                                        item.eval(args, idx);
+                                        item.eval(idx, args);
                                     }
                                 }
                             } else {
@@ -102,9 +88,9 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
                                     i += 1;
                                 }) {
                                     if (comptime loop_info.parallel) |_| {
-                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ args, idx }) catch unreachable;
+                                        threads[i] = std.Thread.spawn(.{}, item.eval, .{ idx, args }) catch unreachable;
                                     } else {
-                                        item.eval(args, idx);
+                                        item.eval(idx, args);
                                     }
                                 }
                             }
@@ -118,12 +104,27 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
             };
         }
 
+        pub fn buildExtern(comptime nest: *const @This()) func.ExternFn(Args, iter_space) {
+            return comptime struct {
+                fn eval(args: func.ExternFnArgs(Args, iter_space)) callconv(.C) void {
+                    const idx: [idx_ndims]usize = .{0} ** idx_ndims;
+                    var _args: func.IterSpaceArgsStruct(Args, iter_space) = undefined;
+                    inline for (comptime std.meta.fieldNames(Args), 0..) |field_name, field_idx| {
+                        @field(_args, std.fmt.comptimePrint("{d}", .{field_idx})) = @field(args, field_name);
+                    }
+                    inline for (nest.body) |item| {
+                        item.eval(idx, _args);
+                    }
+                }
+            }.eval;
+        }
+
         pub inline fn eval(
             comptime nest: *const @This(),
             args: func.ExternFnArgs(Args, iter_space),
         ) void {
-            const eval_fn = comptime nest.build();
-            eval_fn(args);
+            const eval_func = comptime nest.buildExtern();
+            eval_func(args);
         }
 
         pub fn alloc(
@@ -133,7 +134,6 @@ pub fn Nest(comptime Args: type, comptime iter_space: IterSpace) type {
         ) !buffer.IterSpaceBuffer(Array, iter_space) {
             return buffer.IterSpaceBuffer(Array, iter_space).alloc(allocator);
         }
-
         // fuse will need to fuse the args of two different nests
         // to build a new type and appropriately pass in the args into the functions
         // which require the originally defined arg types, this will be tricky!
@@ -149,11 +149,11 @@ const TestArgs = struct {
     b: B,
 };
 
-const test_logic: func.Logic(TestArgs, TestIndices) = struct {
+const Func = func.Func(TestArgs, TestIndices);
+const test_logic: Func.Def = struct {
     // for gpu execution inline this function into a surrounding GPU kernel.
     // Unraveling method would require to be bound to GPU thread / group ids
-    inline fn iter_logic(args: func.LogicArgs(TestArgs, TestIndices), idx: [2]usize) void {
-        const b = args.b;
+    inline fn iter_logic(idx: [2]usize, b: Func.Param(B)) void {
         std.testing.expectEqual(b.constant(.{ .i, .j }, false), b.load(.{ .i, .j }, idx)) catch unreachable;
         b.store(.{ .i, .j }, b.constant(.{ .i, .j }, true), idx);
     }
